@@ -1,0 +1,57 @@
+{
+  "root": "./objects",
+  "sqlite": {
+    "path": "./.object-mcp/index.sqlite",
+    "driver": "better-sqlite3",
+    "busyTimeoutMs": 5000
+  },
+  "embeddings": {
+    "provider": "onnx",
+    "model": "Xenova/multilingual-e5-small",
+    "revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
+    "dimensions": 384,
+    "dtype": "q8",
+    "cacheDir": "./.object-mcp/models",
+    "localFilesOnly": true,
+    "queryPrefix": "query: ",
+    "documentPrefix": "passage: ",
+    "maxTokens": 512,
+    "batchSize": 8
+  },
+  "chunking": { "size": 1200, "overlap": 0.1 },
+  "sync": {
+    "watch": true,
+    "confinement": "auto",
+    "debounceMs": 150,
+    "rescanIntervalMs": 60000,
+    "maxFileBytes": 5000000,
+    "concurrency": 2,
+    "lockTimeoutMs": 10000
+  },
+  "search": {
+    "defaultTopN": 10,
+    "maxTopN": 100,
+    "candidateMultiplier": 5,
+    "rrfK": 60,
+    "fulltextWeight": 1,
+    "semanticWeight": 1,
+    "maxMatchCharacters": 1200
+  },
+  "server": { "name": "object-mcp", "version": "0.1.0" },
+  "mcp": {
+    "inputRepair": {
+      "enabled": true,
+      "syntax": true,
+      "fuzzyKeys": true,
+      "coerceTypes": true,
+      "inferWrappers": true,
+      "splitArrays": false,
+      "minConfidence": 0.8,
+      "maxKeyDistance": 2,
+      "maxInputBytes": 5000000,
+      "maxDepth": 32,
+      "maxNodes": 50000,
+      "maxRepairs": 100
+    }
+  }
+}

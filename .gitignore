@@ -1,0 +1,9 @@
+node_modules/
+.object-mcp/
+**/.object-mcp-lock.sqlite*
+**/.object-mcp-*.tmp
+*.log
+
+.tmp
+.local
+.codegraph

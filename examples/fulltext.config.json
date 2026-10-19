@@ -1,0 +1,5 @@
+{
+  "root": "../objects",
+  "sqlite": { "path": "../.object-mcp/index.sqlite" },
+  "embeddings": { "provider": "disabled" }
+}

@@ -1,0 +1,74 @@
+#!/usr/bin/env bun
+import { StdioServerTransport, serveStdio } from "@modelcontextprotocol/server/stdio";
+import { createFramework } from "./framework.ts";
+import { loadConfig } from "./lib/config.ts";
+import { createMcpServer } from "./lib/mcp.ts";
+
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  const command = args[0] ?? "serve";
+  if (["--help", "-h", "help"].includes(command)) {
+    process.stdout.write(
+      "Usage: bun src/cli.ts <serve|sync|status> --config object-mcp.config.json\n\nserve: MCP over stdio\nsync: reconcile files, report errors, exit\nstatus: startup reconciliation and current index status\n",
+    );
+    return;
+  }
+  if (!["serve", "sync", "status"].includes(command))
+    throw new Error(`Unknown command: ${command}`);
+  const tail = args.slice(1);
+  if (tail.length && (tail.length !== 2 || tail[0] !== "--config" || !tail[1]))
+    throw new Error("Expected --config <filename>.");
+  const config = await loadConfig(tail[1] ?? "object-mcp.config.json");
+  const framework = await createFramework({
+    config: {
+      ...config,
+      sync: { ...config.sync, watch: command === "serve" && config.sync.watch },
+    },
+    onError: (error) => process.stderr.write(`[object-mcp] ${error.code}: ${error.message}\n`),
+  });
+  if (command !== "serve") {
+    try {
+      const output = command === "sync" ? framework.status().lastSync : framework.status();
+      process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+      const lastSync = framework.status().lastSync as { issues?: unknown[] } | null;
+      if (lastSync?.issues?.length) process.exitCode = 2;
+    } finally {
+      await framework.close();
+    }
+    return;
+  }
+  const transport = new StdioServerTransport();
+  const closeTransport = transport.close.bind(transport);
+  transport.close = async () => {
+    try {
+      await closeTransport();
+    } finally {
+      await framework.close();
+    }
+  };
+  const handle = serveStdio(() => createMcpServer(framework, config.server, config.mcp), {
+    transport,
+    onerror: (error) => process.stderr.write(`[mcp] ${error.message}\n`),
+  });
+  let shutdownPromise: Promise<void> | undefined;
+  const shutdown = (): Promise<void> =>
+    (shutdownPromise ??= (async () => {
+      await handle.close();
+      await framework.close();
+    })());
+  const stop = () => {
+    void shutdown().catch((error) => {
+      process.stderr.write(`${String(error)}\n`);
+      process.exitCode = 1;
+    });
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  process.stdin.once("end", stop);
+  process.stdin.once("close", stop);
+}
+
+void main().catch((error) => {
+  process.stderr.write(`[object-mcp] ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exitCode = 1;
+});
