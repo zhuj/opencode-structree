@@ -61,7 +61,7 @@ bun src/cli.ts sync --config object-mcp.config.json
 bun src/cli.ts status --config object-mcp.config.json
 ```
 
-Both commands perform startup reconciliation. They print JSON and exit with code `2` when the reconciliation reports source or embedding issues. They never rewrite source files.
+Both commands perform startup reconciliation. They print JSON and exit with code `2` when the reconciliation reports source or embedding issues. They never rewrite source files. The `status` command prints the same report as the `objects_status` tool, and the `sync` command prints the last synchronization report; both bound their issue list to 50 entries and add the totals and the per-code counts described under [the tools](#the-12-schemas-and-their-tools).
 
 ## Build and OpenCode V2
 
@@ -185,14 +185,14 @@ Both registration functions inherit `objects.config.mcp`. An optional third argu
 | `update(type, id, object, body, expectedChecksum, signal?)` | Replace the complete object/body, preserving ID and `createdAt`. |
 | `delete(type, id, expectedChecksum, signal?)` | Delete the source file and invalidate its derived search data. |
 | `list(type, {limit?, offset?}, signal?)` | Read valid filesystem objects in ID order; default limit 50, maximum 1,000. |
-| `search(request, signal?)` | Retrieve distinct objects from the synchronized index. |
-| `resync(signal?)` | Wait for shared reconciliation and report issues. |
+| `search(request, signal?)` | Retrieve distinct objects from the synchronized index; `topN` is capped by the configured `search.maxTopN`. |
+| `resync(signal?)` | Wait for shared reconciliation and report every issue. |
 | `requestResync()` | Schedule a coalesced background reconciliation. |
-| `status()` | Report index generation, readiness, pending work, and issues. |
+| `status()` | Report index generation, readiness, pending work, and a bounded issue list with its totals and per-code counts. |
 | `onEvent(listener)` | Subscribe to tool mutations, filesystem notifications, and completed sync reports. Returns an unsubscribe function. |
 | `close()` | Cancel pending work, drain active work, and release watcher, model, runtime, and database resources. |
 
-Facade inputs accept domain `Date` objects or the canonical JSON representation. MCP inputs/outputs and YAML dates are ISO strings. A stored response is `{type, object, body, path, checksum}`.
+Facade inputs accept domain `Date` objects or the canonical JSON representation. MCP inputs/outputs and YAML dates are ISO strings. A stored response is `{type, object, body, path, checksum}`; a list response with `includeBody: false` omits the `body` field.
 
 ## The 12 schemas and their tools
 
@@ -215,9 +215,19 @@ Every registration produces `_create`, `_get`, `_update`, `_delete`, and `_list`
 
 The shared tools are `objects_search`, `objects_resync`, `objects_status`, and `objects_definitions`. The last returns JSON schemas derived from the Effect definitions, including descriptions and required keys.
 
+`objects_definitions` takes an optional `type` argument. Without it, it returns every registered type; with it, only that one; an unknown type fails with the `UNKNOWN_TYPE` error. Its output also carries a `guidance` array that states the object model and the intended workflow once, so a model does not have to infer them: the ids are stable and unique within their type and the file name is a hash of the id, `get` answers a known id, update and delete replace the whole revision and need the checksum from the latest get, list, create or update, the timestamps are supplied by the caller while the id and `createdAt` are immutable, relation targets are not validated as described below, `description` is a one-line summary and the body is the Markdown content, and search is not exhaustive. Every per-type tool description ends with "See objects_definitions for the object model and workflow."
+
+The generated input schemas state the limits the runtime enforces. The list `limit` is an integer from 1 to 1000 and defaults to 50, the list `offset` is 0 or more and defaults to 0, and the search `topN` is an integer from 1 to the configured `search.maxTopN`, which is 100 by default, and defaults to the configured `search.defaultTopN`, which is 10 by default. Each per-type list tool takes an optional `includeBody` boolean that defaults to true; with it false the returned objects carry identity, title, path and checksum only, which is the cheap way to discover the contents of a type.
+
+`objects_status` reports the index state, the registry and the embedding state. Its issue list is bounded to the first 50 entries and carries `issuesTotal`, `issuesTruncated` and `issuesByCode`, a count per issue code, so a caller sees what the bound left out instead of a silently shortened list. The report returned by `objects_resync` still lists every issue, so the complete list stays available.
+
 The domain schemas preserve all required fields from the supplied specification. Nullable fields require explicit `null`; canonical objects include every required array and nested commitment struct. `Feature` has no `partOf`; there is no `belongsTo` or separate `Acceptance` entity. See [the field and relationship reference](docs/core-schemas.md).
 
 Schema validation checks shape. It does not check reference existence, inverse relationships, duplicate reference IDs, or dependency/hierarchy cycles. The filesystem layer separately needs one unambiguous `(type,id)` to address a stored object. Conflicting files with the same identity are reported and excluded from indexing; identical ID strings in different registered types are allowed.
+
+## Using structree from an agent
+
+The project skill at `.opencode/skills/structree` teaches an agent how to work with this surface: when the vault is the right source rather than the code, how to search before listing, how the checksum and the caller-owned timestamps constrain a write, how to keep a listing small, and what every relation field means. OpenCode discovers it automatically in this repository, and it points at `objects_definitions` as the authority on the schema of the server it is talking to.
 
 ## Relaxed MCP arguments
 
@@ -283,9 +293,9 @@ Example `objects_search` arguments:
 | `semantic` | Exact cosine distance through `sqlite-vec`; the best matching whole-file/chunk vector determines each object's rank. |
 | `hybrid` | Weighted reciprocal rank fusion of the document-level full-text and semantic candidate lists. |
 
-The default is hybrid when a provider is configured, otherwise full-text. Explicit semantic/hybrid requests fail clearly when embeddings are disabled or the provider cannot embed the query. Embedding failures during indexing leave full-text search available and mark affected objects pending.
+The default is hybrid when a provider is configured, otherwise full-text, and the tool description states that rule. Explicit semantic/hybrid requests fail clearly when embeddings are disabled or the provider cannot embed the query. A provider failure keeps the `EMBEDDINGS_UNAVAILABLE` code and its cause, and its message ends with `Search with mode "fulltext" to query without embeddings.` Embedding failures during indexing leave full-text search available and mark affected objects pending.
 
-Omitting `types` searches all registered types. An empty `types` array searches none. Unknown names fail validation. Both ranking methods filter types **before** their candidate limits, and multiple chunks never consume multiple positions in the final object result. `topN` is a maximum; fewer eligible matches may exist.
+Omitting `types` searches all registered types. An empty `types` array searches none. The parameter is published as an enum of the registered type names, so an unknown name is rejected by input validation with the full list in the message, before the call reaches the framework. A name that reaches the framework anyway fails with the `UNKNOWN_TYPE` code and carries `registeredTypes`, the sorted registered type names, in its error details. Both ranking methods filter types **before** their candidate limits, and multiple chunks never consume multiple positions in the final object result. `topN` is a maximum; fewer eligible matches may exist.
 
 Results include type, ID, name/title, source path/checksum, score, full-text rank, semantic distance, and the matching chunk excerpt when applicable. `includeBody` adds the full body. Excerpts are capped by `search.maxMatchCharacters`; their `[start,end)` offsets refer to the returned text in Unicode code points. A score is a ranking value, not a probability. Hybrid fusion examines `topN * candidateMultiplier` candidates per method, so increasing this setting can change the fused result order.
 

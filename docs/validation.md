@@ -1,14 +1,14 @@
 # Validation evidence
 
-Latest verification: **2026-10-20**, Linux x64, Bun **1.4.3**. Direct dependencies are pinned in `package.json`; the package includes both `bun.lock` and `package-lock.json`. The table below is the current measurement; the earlier snapshots that follow it record what was reported at the time, and their numbers cannot be re-derived from this repository, which has a single commit.
+Latest verification: **2026-10-20**, Linux x64, Bun **1.4.3**. Direct dependencies are pinned in `package.json`; the package includes both `bun.lock` and `package-lock.json`. The table below is the current measurement; the earlier snapshots that follow it record what was reported at the time, and their numbers cannot be re-derived from the current tree, although the commits they were measured at are in the history. A protocol-level probe against the built bundle confirmed the published tool schemas, the bounded status response and the completeness of the resync report.
 
-## Current reusable library and vault update
+## Current library, vault and tool surface update
 
 | Check | Result |
 | --- | --- |
 | Biome 2.5.15, formatting/lint/import gate | **103 files checked; no diagnostics or fixes in the final read-only gate.** |
 | Strict TypeScript with `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess` | Passed with TypeScript 7.0.2. |
-| Complete ordinary suite via `bun run check` | **308 passed, 0 failed, 2 optional ONNX skips; 2,274 assertions across 310 tests in 24 files.** |
+| Complete ordinary suite via `bun run check` | **342 passed, 0 failed, 2 optional ONNX skips; 2,429 assertions across 24 files.** |
 | Reusable import boundary and custom application | Every relative library import stays inside `src/lib`; public subpaths resolve; a Notes-only framework persists/searches through native SQLite and exposes nine MCP tools. |
 | Generic vault | 20 tests, including 19 filesystem tests, 99 assertions, covering independent Effect headers, byte/body preservation, strict parsing, expected checksums, publication ownership, confinement, partial discovery, cancellation, and draining. |
 | Reusable watcher/reconciliation lifecycle | 20 tests, 81 assertions, including actual Chokidar notifications, readiness before scanning, shared callers, dirty completion races, shutdown/failure handling, and incomplete snapshots. |
@@ -16,16 +16,29 @@ Latest verification: **2026-10-20**, Linux x64, Bun **1.4.3**. Direct dependenci
 | Integrated lifecycle | 10 tests, 68 assertions, including multiple cleanup failures, preserved startup cause, incomplete vault scans, and source deletion/rename during deferred embeddings. |
 | Configuration | Three confinement modes accepted; invalid values rejected; existing partial settings receive `auto`. |
 | Existing persistence, parser, MCP, search, and cache behavior | All ordinary regression suites passed, including the original v2 SQLite compatibility fixture and relaxed argument guards. |
+| MCP tool surface | The advertised list and search bounds with their defaults, the fallback bounds of a facade without configuration, the registered type names published as an enum, the `type` filter and the `guidance` array of `objects_definitions`, the workflow clause on every per-type description, the compact list without its body, the bounded status with its total, truncation flag and per-code counts, the provider-failure hint, and the registered type names carried by an unknown-type error. |
 | Real stdio CLI via ordinary OS pipes | All 64 tools, canonical CRUD/search, relaxed argument metadata, EOF shutdown, and crashed-lock recovery passed. |
-| CLI command contracts | Unknown commands, malformed argument lists, the help text, the `status` JSON shape, and the exit-code-2 path for reported issues are asserted by `test/cli.test.ts`, which drives the shipped CLI as a subprocess. |
+| CLI command contracts | Unknown commands, malformed argument lists, the help text, the `status` JSON shape, and the exit-code-2 path for reported issues are asserted by `test/cli.test.ts`, which drives the shipped CLI as a subprocess. The printed status carries the bounded issue list with its total, its truncation flag and its per-code counts, and the `sync` command prints the last synchronization report, bounded the same way. |
 | Dependency/lockfile consistency | Runtime and dev dependencies, and both lockfiles, are unchanged from the committed baseline; `package.json` changed only in its scripts. The frozen Bun lockfile validation was not repeated for this measurement, because it is an install-time check and this pass made no dependency change. |
-| Architecture decision records | The 6 records in `docs/decisions` were reviewed manually on 2026-10-20 for the shared frontmatter fields, a decision status, a matching index entry, and the standard sections. No automated decision linter exists in this repository: there is no such script in `package.json`, no Markdown lint configuration, and no CI directory. Biome covers JSON and TypeScript only. |
+| Architecture decision records | The 7 records in `docs/decisions` carry the shared frontmatter fields, a decision status and a matching index entry. The new record, `0007`, was written in the same format and with the same sections as `0006`; the earlier records were not re-reviewed for this measurement. No automated decision linter exists in this repository: there is no such script in `package.json`, no Markdown lint configuration, and no CI directory. Biome covers JSON and TypeScript only. |
 
-This update adds **68 passing tests and 337 assertions** to the preceding
-snapshot (308 - 240 passed, 2,274 - 1,937 assertions, 24 - 22 files). The
-preceding package is not available for re-derivation here, because this
-repository has a single commit; that baseline is only the numbers recorded
-in the earlier snapshot below. The generic framework requires explicit
+The library and vault update adds **68 passing tests and 337 assertions** to
+the preceding snapshot (308 - 240 passed, 2,274 - 1,937 assertions, 24 - 22
+files). The
+preceding package is not available for re-derivation from the current tree;
+the commit it was measured at, `96a3f93`, is in the history, so that baseline is
+only the numbers recorded
+in the earlier snapshot below. The current tree adds the project-local
+OpenCode setup and the tool-surface update of
+[ADR 0007](decisions/0007-advertise-effective-bounds-and-bound-status-output.md)
+on top of that commit, which is why the suite above reports 342 passed rather
+than 308. The tool-surface change itself adds 7 tests, covering the advertised
+list and search bounds with their defaults, the fallback bounds of a facade
+without configuration, the registered type names published as an enum, the
+`objects_definitions` filter and its guidance, the workflow clause on every
+per-type description, the compact list, the bounded status with its counters,
+the provider-failure hint, and the registered type names carried by an
+unknown-type error. The generic framework requires explicit
 registrations, while the root application factory retains its 12 core
 defaults. The boundary test proves this distinction at runtime as well as
 checking imports. The vault's unrelated Effect header proves it can be used

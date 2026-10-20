@@ -223,7 +223,11 @@ export class ObjectRegistry {
   get(name: string): ObjectDefinition {
     const definition = this.entries.get(name);
     if (!definition)
-      throw new FrameworkError("UNKNOWN_TYPE", `Unknown object type '${name}'.`, { type: name });
+      throw new FrameworkError("UNKNOWN_TYPE", `Unknown object type '${name}'.`, {
+        type: name,
+        // The registered names are the only correction a caller can make, so they travel with the error.
+        registeredTypes: [...this.entries.keys()].sort(),
+      });
     return definition;
   }
 

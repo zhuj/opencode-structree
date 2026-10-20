@@ -33,6 +33,16 @@ The persistence/MCP codec encodes dates as ISO strings and applies JSON represen
 
 Empty arrays and explicit nullable parents are valid. Required owner IDs do not imply target existence, inverse consistency, or hierarchy/dependency cycle validation. The shape schemas allow repeated IDs within arrays. Cross-object validation can be added at an application boundary if a host needs it.
 
+## The tool surface
+
+`objects_definitions` publishes the canonical JSON schema of every registered type. It takes an optional `type` argument, which returns a single definition instead of the whole registry, and its output carries a `guidance` array with the shared object model and workflow. Each per-type tool description points at it.
+
+Three properties of these schemas are part of the published surface and not only of this document:
+
+- The id is the stable handle. It is unique within its type, and the file name is a hash of the id, so an id is never a path.
+- Relation targets are not validated. A required owner ID names a target that may not exist yet, and nothing rejects the write.
+- The type names are published as an enum in the search tool's `types` parameter, so an unknown name is rejected by input validation with the full list in the message. A name that reaches the framework anyway fails with `UNKNOWN_TYPE`, and the error details carry `registeredTypes`, the sorted registered type names.
+
 ## Source files
 
 | File | Exports |

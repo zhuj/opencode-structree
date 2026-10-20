@@ -4,7 +4,13 @@ import { defaultConfig, McpInputRepairConfigSchema } from "./config.ts";
 import { FrameworkError } from "./errors";
 import { createMcpInputBoundary, effectMcpSchema } from "./mcp-input.ts";
 import { ObjectRegistry } from "./registry";
-import type { McpInputRepairConfig, ObjectFacade, StoredObject } from "./types";
+import {
+  LIST_LIMIT_DEFAULT,
+  LIST_LIMIT_MAX,
+  type McpInputRepairConfig,
+  type ObjectFacade,
+  type StoredObject,
+} from "./types";
 
 export { effectMcpSchema } from "./mcp-input.ts";
 
@@ -17,14 +23,7 @@ const IdInput = Schema.Struct({
 });
 // An empty Effect Struct also accepts non-objects; a string-keyed Never record accepts only {}.
 const EmptyInput = Schema.Record(Schema.String, Schema.Never);
-const PositiveInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
 const NonnegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
-const ListInput = Schema.Struct({
-  limit: Schema.optionalKey(PositiveInt).annotate({ description: "Maximum objects to return." }),
-  offset: Schema.optionalKey(NonnegativeInt).annotate({
-    description: "Number of objects to skip in identifier order.",
-  }),
-});
 const DeleteInput = Schema.Struct({
   id: Schema.String,
   expectedChecksum: Schema.NonEmptyString.annotate({
@@ -32,23 +31,56 @@ const DeleteInput = Schema.Struct({
       "Checksum returned by the latest get/list/create/update; prevents overwriting a newer revision.",
   }),
 });
-const SearchInput = Schema.Struct({
-  query: Schema.NonEmptyString.annotate({
-    description: "Search text. Full-text mode treats words literally, without raw FTS operators.",
-  }),
-  mode: Schema.optionalKey(Schema.Literals(["fulltext", "semantic", "hybrid"])).annotate({
-    description: "Full-text, semantic, or hybrid search.",
-  }),
-  types: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
-    description: "Optional subset of registered type names. An empty array searches no types.",
-  }),
-  topN: Schema.optionalKey(PositiveInt).annotate({
-    description: "Maximum number of distinct matching objects, subject to the configured limit.",
-  }),
-  includeBody: Schema.optionalKey(Schema.Boolean).annotate({
-    description: "Include each matched object's complete Markdown body.",
-  }),
-});
+/** The bounds a facade advertises; a facade without configuration falls back to the defaults. */
+interface EffectiveSearch {
+  readonly maxTopN: number;
+  readonly defaultTopN: number;
+}
+
+/**
+ * The advertised bounds must match the effective configuration, so the list and search
+ * schemas are built per facade instead of once per module.
+ */
+function buildInputSchemas(search: EffectiveSearch, typeNames: readonly string[]) {
+  // A registry without definitions has no names to publish, so the filter stays a plain string.
+  const typeName = typeNames.length > 0 ? Schema.Literals(typeNames) : Schema.String;
+  return {
+    list: Schema.Struct({
+      limit: Schema.optionalKey(
+        Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: LIST_LIMIT_MAX })),
+      ).annotate({
+        description: `Maximum objects to return, 1 to ${LIST_LIMIT_MAX}. Defaults to ${LIST_LIMIT_DEFAULT}.`,
+      }),
+      offset: Schema.optionalKey(NonnegativeInt).annotate({
+        description: "Number of objects to skip in identifier order. Defaults to 0.",
+      }),
+      includeBody: Schema.optionalKey(Schema.Boolean).annotate({
+        description: "Include each object's Markdown body. Defaults to true.",
+      }),
+    }),
+    search: Schema.Struct({
+      query: Schema.NonEmptyString.annotate({
+        description:
+          "Search text. Full-text mode treats words literally, without raw FTS operators.",
+      }),
+      mode: Schema.optionalKey(Schema.Literals(["fulltext", "semantic", "hybrid"])).annotate({
+        description:
+          "Full-text, semantic, or hybrid search. Defaults to hybrid when an embedding provider is configured, fulltext otherwise.",
+      }),
+      types: Schema.optionalKey(Schema.Array(typeName)).annotate({
+        description: "Optional subset of registered type names. An empty array searches no types.",
+      }),
+      topN: Schema.optionalKey(
+        Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: search.maxTopN })),
+      ).annotate({
+        description: `Maximum number of distinct matching objects, 1 to ${search.maxTopN}. Defaults to ${search.defaultTopN}.`,
+      }),
+      includeBody: Schema.optionalKey(Schema.Boolean).annotate({
+        description: "Include each matched object's complete Markdown body.",
+      }),
+    }),
+  };
+}
 const SearchOutput = effectMcpSchema(
   Schema.Struct({
     mode: Schema.Literals(["fulltext", "semantic", "hybrid"]),
@@ -89,6 +121,21 @@ const ResyncOutput = effectMcpSchema(
     generation: NonnegativeInt,
   }),
 );
+const DefinitionsInput = Schema.Struct({
+  type: Schema.optionalKey(Schema.String).annotate({
+    description: "Return only this registered type. Omit it for every registered type.",
+  }),
+});
+/** The workflow every type shares, published once so each tool can point at it. */
+const DEFINITION_GUIDANCE = [
+  "Object ids are stable, unique within their type, and are the only handle: the file name is a hash of the id.",
+  "Use the type's get tool for a known id; do not list a whole type to find one object.",
+  "Update and delete replace the whole revision and require the checksum returned by the latest get, list, create or update.",
+  "Timestamps are supplied by the caller; the id and createdAt are immutable.",
+  "Relation targets are not validated: a link to an object that does not exist is stored as written.",
+  "The description field is a one-line summary; the body is the Markdown content.",
+  "Search is not exhaustive: it is capped by topN and can miss a stale hit, so confirm a known id with get.",
+];
 const DefinitionsOutput = effectMcpSchema(
   Schema.Struct({
     definitions: Schema.Array(
@@ -99,6 +146,7 @@ const DefinitionsOutput = effectMcpSchema(
         schema: Schema.JsonObject,
       }),
     ),
+    guidance: Schema.Array(Schema.String),
   }),
 );
 const StatusOutput = effectMcpSchema(Schema.JsonObject);
@@ -108,6 +156,8 @@ const readOnly = {
   idempotentHint: true,
   openWorldHint: false,
 };
+/** The per-type tools repeat the workflow contract so a caller never needs another tool to use them. */
+const WORKFLOW_CLAUSE = "See objects_definitions for the object model and workflow.";
 
 function success(structuredContent: Record<string, unknown>): CallToolResult {
   return {
@@ -174,10 +224,19 @@ export function registerObjectTools(
       : response;
   };
   const registry = new ObjectRegistry(facade.definitions);
-  const encodeStored = (stored: StoredObject): Record<string, unknown> => ({
+  const configuredSearch = facade.config?.search;
+  const effectiveSearch: EffectiveSearch = {
+    maxTopN: configuredSearch?.maxTopN ?? defaultConfig.search.maxTopN,
+    defaultTopN: configuredSearch?.defaultTopN ?? defaultConfig.search.defaultTopN,
+  };
+  const { list: listInput, search: searchInput } = buildInputSchemas(
+    effectiveSearch,
+    registry.definitions.map((definition) => definition.name),
+  );
+  const encodeStored = (stored: StoredObject, includeBody = true): Record<string, unknown> => ({
     type: stored.type,
     object: registry.encode(stored.type, stored.object),
-    body: stored.body,
+    ...(includeBody ? { body: stored.body } : {}),
     path: stored.path,
     checksum: stored.checksum,
   });
@@ -194,7 +253,7 @@ export function registerObjectTools(
     server.registerTool(
       `${definition.name}_create`,
       {
-        description: `Create one ${definition.name} Markdown file. Supply all object fields, including timestamps and nullable fields. Omitted body defaults to an empty string. ${definition.description}`,
+        description: `Create one ${definition.name} Markdown file. Supply all object fields, including timestamps and nullable fields. Omitted body defaults to an empty string. ${definition.description} ${WORKFLOW_CLAUSE}`,
         inputSchema: input.schema(
           Schema.Struct({ object: definition.schema, body: Schema.optionalKey(Schema.String) }),
         ),
@@ -217,7 +276,7 @@ export function registerObjectTools(
     server.registerTool(
       `${definition.name}_get`,
       {
-        description: `Read one ${definition.name} directly from its Markdown file and return its checksum.`,
+        description: `Read one ${definition.name} directly from its Markdown file and return its checksum. ${WORKFLOW_CLAUSE}`,
         inputSchema: input.schema(IdInput),
         outputSchema: storedOutput,
         annotations: readOnly,
@@ -231,7 +290,7 @@ export function registerObjectTools(
     server.registerTool(
       `${definition.name}_update`,
       {
-        description: `Replace a complete ${definition.name} object and Markdown body. The identifier and createdAt timestamp are immutable. Supply the latest checksum and your updatedAt timestamp.`,
+        description: `Replace a complete ${definition.name} object and Markdown body. The identifier and createdAt timestamp are immutable. Supply the latest checksum and your updatedAt timestamp. ${WORKFLOW_CLAUSE}`,
         inputSchema: input.schema(
           Schema.Struct({
             id: Schema.String,
@@ -268,7 +327,7 @@ export function registerObjectTools(
     server.registerTool(
       `${definition.name}_delete`,
       {
-        description: `Delete a ${definition.name} Markdown file and its derived search data. Supply its latest checksum.`,
+        description: `Delete a ${definition.name} Markdown file and its derived search data. Supply its latest checksum. ${WORKFLOW_CLAUSE}`,
         inputSchema: input.schema(DeleteInput),
         outputSchema: effectMcpSchema(
           Schema.Struct({
@@ -293,17 +352,30 @@ export function registerObjectTools(
     server.registerTool(
       `${definition.name}_list`,
       {
-        description: `List ${definition.name} objects read from the filesystem, in identifier order.`,
-        inputSchema: input.schema(ListInput),
+        description: `List ${definition.name} objects read from the filesystem, in identifier order. Set includeBody to false to omit the Markdown body and return only identity, title, path and checksum. ${WORKFLOW_CLAUSE}`,
+        inputSchema: input.schema(listInput),
         outputSchema: effectMcpSchema(
-          Schema.Struct({ objects: Schema.Array(storedSchema), total: NonnegativeInt }),
+          Schema.Struct({
+            // The list output is the stored shape without the body, so the two cannot drift apart.
+            objects: Schema.Array(
+              Schema.Struct({
+                ...storedSchema.fields,
+                body: Schema.optionalKey(Schema.String),
+              }),
+            ),
+            total: NonnegativeInt,
+          }),
         ),
         annotations: readOnly,
       },
       (args, ctx) =>
         toolResult(args, async () => {
           const listed = await facade.list(definition.name, args, ctx.mcpReq.signal);
-          return { objects: listed.objects.map(encodeStored), total: listed.total };
+          const includeBody = args.includeBody ?? true;
+          return {
+            objects: listed.objects.map((stored) => encodeStored(stored, includeBody)),
+            total: listed.total,
+          };
         }),
     );
   }
@@ -313,7 +385,7 @@ export function registerObjectTools(
     {
       description:
         "Search distinct objects using literal full-text, semantic embeddings, or hybrid reciprocal-rank fusion. Optional types restrict both ranking methods before limits. Search uses the synchronized, rebuildable SQLite index.",
-      inputSchema: input.schema(SearchInput),
+      inputSchema: input.schema(searchInput),
       outputSchema: SearchOutput,
       annotations: readOnly,
     },
@@ -341,7 +413,8 @@ export function registerObjectTools(
   server.registerTool(
     "objects_status",
     {
-      description: "Show the current index, synchronization, and embedding-provider status.",
+      description:
+        "Show the current index, synchronization, and embedding-provider status, with a bounded issue list and its per-code counts. The resync report keeps every issue.",
       inputSchema: input.schema(EmptyInput),
       outputSchema: StatusOutput,
       annotations: readOnly,
@@ -353,20 +426,25 @@ export function registerObjectTools(
     "objects_definitions",
     {
       description:
-        "List the registered object types and canonical JSON schemas generated from their Effect definitions. Dates are ISO strings on the wire and in YAML.",
-      inputSchema: input.schema(EmptyInput),
+        "List the registered object types and canonical JSON schemas generated from their Effect definitions, optionally filtered to one type, together with the shared object-model and workflow contract. Dates are ISO strings on the wire and in YAML.",
+      inputSchema: input.schema(DefinitionsInput),
       outputSchema: DefinitionsOutput,
       annotations: readOnly,
     },
     (args) =>
-      toolResult(args, () => ({
-        definitions: registry.definitions.map((definition) => ({
-          name: definition.name,
-          directory: definition.directory,
-          description: definition.description,
-          schema: registry.jsonSchema(definition.name),
-        })),
-      })),
+      toolResult(args, () => {
+        // An unknown type fails with the registry's own error so the caller learns the registered names.
+        const selected = args.type ? [registry.get(args.type)] : registry.definitions;
+        return {
+          definitions: selected.map((definition) => ({
+            name: definition.name,
+            directory: definition.directory,
+            description: definition.description,
+            schema: registry.jsonSchema(definition.name),
+          })),
+          guidance: [...DEFINITION_GUIDANCE],
+        };
+      }),
   );
 }
 

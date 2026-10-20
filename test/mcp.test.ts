@@ -35,7 +35,7 @@ const projectJson = () => ({
 
 class MemoryFacade implements ObjectFacade {
   readonly definitions = coreDefinitions;
-  config?: Pick<FrameworkConfig, "mcp">;
+  config?: Pick<FrameworkConfig, "mcp"> & Partial<Pick<FrameworkConfig, "search">>;
   readonly objects = new Map<string, StoredObject>();
   readonly registry = createCoreRegistry();
   lastSignal: AbortSignal | undefined;
@@ -236,6 +236,127 @@ describe("official MCP adapter", () => {
         const extra = await client.callTool({ name, arguments: { unexpected: true } });
         expect(extra.isError).toBe(true);
       }
+    });
+  });
+
+  test("advertises the list bounds, the configured search bounds, and the registered type names", async () => {
+    const facade = new MemoryFacade();
+    facade.config = defineConfig({ search: { maxTopN: 42, defaultTopN: 7 } });
+    await connected(async (client) => {
+      const { tools } = await client.listTools();
+      const list = tools.find((tool) => tool.name === "project_list")!;
+      expect(list.inputSchema).toHaveProperty("properties.limit.minimum", 1);
+      expect(list.inputSchema).toHaveProperty("properties.limit.maximum", 1000);
+      expect(list.inputSchema).toHaveProperty(
+        "properties.limit.description",
+        "Maximum objects to return, 1 to 1000. Defaults to 50.",
+      );
+      expect(list.inputSchema).toHaveProperty("properties.offset.minimum", 0);
+      expect(list.inputSchema).toHaveProperty(
+        "properties.offset.description",
+        "Number of objects to skip in identifier order. Defaults to 0.",
+      );
+      const search = tools.find((tool) => tool.name === "objects_search")!;
+      expect(search.inputSchema).toHaveProperty("properties.topN.minimum", 1);
+      expect(search.inputSchema).toHaveProperty("properties.topN.maximum", 42);
+      expect(search.inputSchema).toHaveProperty(
+        "properties.topN.description",
+        "Maximum number of distinct matching objects, 1 to 42. Defaults to 7.",
+      );
+      expect(search.inputSchema).toHaveProperty(
+        "properties.mode.description",
+        "Full-text, semantic, or hybrid search. Defaults to hybrid when an embedding provider is configured, fulltext otherwise.",
+      );
+      expect(search.inputSchema).toHaveProperty(
+        "properties.types.items.enum",
+        coreDefinitions.map((definition) => definition.name),
+      );
+    }, facade);
+  });
+
+  test("advertises the default search bounds when the facade exposes no configuration", async () => {
+    await connected(async (client) => {
+      const { tools } = await client.listTools();
+      const search = tools.find((tool) => tool.name === "objects_search")!;
+      expect(search.inputSchema).toHaveProperty("properties.topN.maximum", 100);
+      expect(search.inputSchema).toHaveProperty(
+        "properties.topN.description",
+        "Maximum number of distinct matching objects, 1 to 100. Defaults to 10.",
+      );
+    });
+  });
+
+  test("objects_definitions filters by type, lists every type, and publishes the workflow", async () => {
+    await connected(async (client) => {
+      const all = await client.callTool({ name: "objects_definitions", arguments: {} });
+      expect(all.isError).not.toBe(true);
+      expect(all.structuredContent).toHaveProperty("definitions.length", 12);
+      const guidance = (all.structuredContent as { guidance: string[] }).guidance;
+      expect(guidance).toHaveLength(7);
+      expect(guidance[0]).toBe(
+        "Object ids are stable, unique within their type, and are the only handle: the file name is a hash of the id.",
+      );
+      expect(guidance[6]).toBe(
+        "Search is not exhaustive: it is capped by topN and can miss a stale hit, so confirm a known id with get.",
+      );
+      const single = await client.callTool({
+        name: "objects_definitions",
+        arguments: { type: "project" },
+      });
+      expect(single.isError).not.toBe(true);
+      expect(single.structuredContent).toHaveProperty("definitions.length", 1);
+      expect(single.structuredContent).toHaveProperty("definitions.0.name", "project");
+      expect(single.structuredContent).toHaveProperty("guidance.length", 7);
+      const unknown = await client.callTool({
+        name: "objects_definitions",
+        arguments: { type: "does_not_exist" },
+      });
+      expect(unknown.isError).toBe(true);
+      expect(unknown.structuredContent).toHaveProperty("error.code", "UNKNOWN_TYPE");
+    });
+  });
+
+  test("per-type tool descriptions point at the published workflow", async () => {
+    await connected(async (client) => {
+      const { tools } = await client.listTools();
+      for (const operation of ["create", "get", "update", "delete", "list"]) {
+        const tool = tools.find((entry) => entry.name === `project_${operation}`)!;
+        expect(tool.description).toContain(
+          "See objects_definitions for the object model and workflow.",
+        );
+      }
+      const list = tools.find((tool) => tool.name === "project_list")!;
+      expect(list.description).toContain(
+        "Set includeBody to false to omit the Markdown body and return only identity, title, path and checksum.",
+      );
+      expect(list.inputSchema).toHaveProperty("properties.includeBody.type", "boolean");
+    });
+  });
+
+  test("list omits the body only when includeBody is false", async () => {
+    await connected(async (client) => {
+      const created = await client.callTool({
+        name: "project_create",
+        arguments: { object: projectJson(), body: "# Body" },
+      });
+      expect(created.isError).not.toBe(true);
+      const listed = await client.callTool({ name: "project_list", arguments: {} });
+      const objects = (listed.structuredContent as { objects: Record<string, unknown>[] }).objects;
+      expect(objects[0]).toHaveProperty("body", "# Body");
+      const compact = await client.callTool({
+        name: "project_list",
+        arguments: { includeBody: false },
+      });
+      expect(compact.isError).not.toBe(true);
+      const compactObjects = (
+        compact.structuredContent as {
+          objects: Record<string, unknown>[];
+        }
+      ).objects;
+      expect(compactObjects[0]).not.toHaveProperty("body");
+      expect(compactObjects[0]).toHaveProperty("path");
+      expect(compactObjects[0]).toHaveProperty("checksum");
+      expect(compactObjects[0]).toHaveProperty("object.id", "p-1");
     });
   });
 

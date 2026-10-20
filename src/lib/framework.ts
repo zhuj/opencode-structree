@@ -8,17 +8,20 @@ import { asFrameworkError, FrameworkError } from "./errors.ts";
 import { checksum, FileStore, objectKey } from "./filesystem.ts";
 import { ObjectRegistry } from "./registry.ts";
 import { SqliteIndex } from "./sqlite/index.ts";
-import type {
-  EmbeddingProvider,
-  FrameworkConfig,
-  ObjectDefinition,
-  ObjectFacade,
-  SearchRequest,
-  SearchResponse,
-  SourceDocument,
-  StoredObject,
-  SyncIssue,
-  SyncReport,
+import {
+  type EmbeddingProvider,
+  type FrameworkConfig,
+  LIST_LIMIT_DEFAULT,
+  LIST_LIMIT_MAX,
+  type ObjectDefinition,
+  type ObjectFacade,
+  type SearchRequest,
+  type SearchResponse,
+  type SourceDocument,
+  STATUS_ISSUE_LIMIT,
+  type StoredObject,
+  type SyncIssue,
+  type SyncReport,
 } from "./types.ts";
 import { reconcileSnapshot } from "./vault/reconciliation.ts";
 import { WatchLifecycle } from "./vault/watch-lifecycle.ts";
@@ -54,6 +57,31 @@ const publicObject = (document: SourceDocument): StoredObject => ({
   path: document.path,
   checksum: document.checksum,
 });
+
+/**
+ * The status report lists a bounded number of issues, so the totals and the per-code
+ * counts describe what the bound left out.
+ */
+function summarizeIssues(issues: readonly SyncIssue[]): {
+  readonly issues: readonly SyncIssue[];
+  readonly issuesTotal: number;
+  readonly issuesTruncated: boolean;
+  readonly issuesByCode: Record<string, number>;
+} {
+  const issuesByCode: Record<string, number> = {};
+  for (const issue of issues) issuesByCode[issue.code] = (issuesByCode[issue.code] ?? 0) + 1;
+  return {
+    issues: issues.slice(0, STATUS_ISSUE_LIMIT),
+    issuesTotal: issues.length,
+    issuesTruncated: issues.length > STATUS_ISSUE_LIMIT,
+    issuesByCode,
+  };
+}
+
+/** The stored report keeps every issue; only its published copy is bounded. */
+function summarizeSyncReport(report: SyncReport) {
+  return { ...report, ...summarizeIssues(report.issues) };
+}
 
 export class ObjectFramework implements ObjectFacade {
   readonly definitions: readonly ObjectDefinition[];
@@ -290,18 +318,18 @@ export class ObjectFramework implements ObjectFacade {
     signal?: AbortSignal,
   ): Promise<{ objects: readonly StoredObject[]; total: number }> {
     return this.run(async (inner) => {
-      const limit = options.limit ?? 50;
+      const limit = options.limit ?? LIST_LIMIT_DEFAULT;
       const offset = options.offset ?? 0;
       if (
         !Number.isSafeInteger(limit) ||
         limit < 1 ||
-        limit > 1000 ||
+        limit > LIST_LIMIT_MAX ||
         !Number.isSafeInteger(offset) ||
         offset < 0
       )
         throw new FrameworkError(
           "VALIDATION",
-          "List limit must be 1..1000 and offset must be nonnegative integers.",
+          `List limit must be 1..${LIST_LIMIT_MAX} and offset must be nonnegative integers.`,
         );
       const scan = await this.store.scan(type, inner);
       if (!scan.complete)
@@ -437,7 +465,7 @@ export class ObjectFramework implements ObjectFacade {
         } catch (error) {
           throw new FrameworkError(
             "EMBEDDINGS_UNAVAILABLE",
-            `Embedding provider failed: ${error instanceof Error ? error.message : String(error)}`,
+            `Embedding provider failed: ${error instanceof Error ? error.message : String(error)}. Search with mode "fulltext" to query without embeddings.`,
             {},
             { cause: error },
           );
@@ -462,8 +490,10 @@ export class ObjectFramework implements ObjectFacade {
 
   status(): Record<string, unknown> {
     this.ensureOpen();
+    const index = this.index.status(this.fingerprint);
     return {
-      ...this.index.status(this.fingerprint),
+      ...index,
+      ...summarizeIssues(index.issues),
       root: this.config.root,
       registeredTypes: this.definitions.map((definition) => definition.name),
       syncing: this.synchronization.syncing,
@@ -473,7 +503,7 @@ export class ObjectFramework implements ObjectFacade {
         fingerprint: this.fingerprint ?? null,
         dimensions: this.provider?.dimensions ?? null,
       },
-      lastSync: this.lastSync ?? null,
+      lastSync: this.lastSync ? summarizeSyncReport(this.lastSync) : null,
       lastError: this.lastError
         ? { code: this.lastError.code, message: this.lastError.message }
         : null,

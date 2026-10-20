@@ -99,6 +99,38 @@ For an arbitrary frontmatter shape without the common object contract, use
 requirements. See [the vault guide](vault.md) and
 [examples/vault.ts](../examples/vault.ts).
 
+## The facade contract
+
+The facade is the same for the application and for a custom registry, and the
+generated tools advertise the bounds it enforces. The three read paths that a
+client depends on most:
+
+| Method | Contract |
+| --- | --- |
+| `list(type, {limit?, offset?}, signal?)` | Valid filesystem objects in identifier order. `limit` is an integer from 1 to 1000 and defaults to 50; `offset` is 0 or more and defaults to 0. A value outside those ranges fails with `VALIDATION`. |
+| `search(request, signal?)` | Distinct objects from the synchronized index. `mode` is `fulltext`, `semantic` or `hybrid`, and defaults to hybrid when an embedding provider is configured and to full-text otherwise. `topN` is an integer from 1 to `config.search.maxTopN` and defaults to `config.search.defaultTopN`. |
+| `status()` | The index state, the registry, the embedding state, and the reconciliation issues. |
+
+Two details of that contract are visible to the client:
+
+- A provider that cannot embed the query raises `EMBEDDINGS_UNAVAILABLE` with
+  the provider's own message as the cause. The message ends with `Search with
+  mode "fulltext" to query without embeddings.`, and an explicitly requested
+  semantic or hybrid search is never downgraded to full-text.
+- The status report bounds its issue list to 50 entries and adds
+  `issuesTotal`, `issuesTruncated` and `issuesByCode`, a count per issue code.
+  The stored synchronization report is not mutated, so `resync()` still
+  returns every issue.
+
+The `includeBody` option belongs to the tool layer, not to the facade. The
+facade always returns complete objects; the generated list tool takes an
+optional `includeBody` boolean that defaults to true and omits the `body`
+field of each returned object when it is false.
+
+A facade that exposes `config.search` makes the generated search schema state
+its own `maxTopN` and `defaultTopN`. A facade without configuration advertises
+the built-in defaults of 100 and 10.
+
 ## Copying the library
 
 Copy `src/lib` as a unit and preserve its internal relative imports. Add the

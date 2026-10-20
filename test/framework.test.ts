@@ -11,7 +11,7 @@ import { BaseObjectSchema } from "../src/lib/base-schema.ts";
 import { FrameworkError } from "../src/lib/errors.ts";
 import type { FileStore } from "../src/lib/filesystem.ts";
 import { createMcpServer } from "../src/lib/mcp.ts";
-import type { EmbeddingProvider, StoredObject } from "../src/lib/types.ts";
+import { type EmbeddingProvider, STATUS_ISSUE_LIMIT, type StoredObject } from "../src/lib/types.ts";
 import { coreDefinitions, ObjectRegistry } from "../src/registry.ts";
 
 const tempDirs: string[] = [];
@@ -68,6 +68,7 @@ class TestEmbeddingProvider implements EmbeddingProvider {
   documentCalls = 0;
   closed = false;
   beforeDocument: ((texts: readonly string[], signal?: AbortSignal) => Promise<void>) | undefined;
+  beforeQuery: ((texts: readonly string[], signal?: AbortSignal) => Promise<void>) | undefined;
   constructor(readonly fingerprint = "integration-test-v1") {}
   async embed(
     texts: readonly string[],
@@ -78,6 +79,8 @@ class TestEmbeddingProvider implements EmbeddingProvider {
     if (purpose === "document") {
       this.documentCalls++;
       await this.beforeDocument?.(texts, signal);
+    } else {
+      await this.beforeQuery?.(texts, signal);
     }
     signal?.throwIfAborted();
     return texts.map((text) => {
@@ -427,6 +430,64 @@ describe("filesystem-authoritative framework", () => {
       framework.search({ query: "architecture", topN: maxTopN + 1 }),
     ).rejects.toMatchObject({ code: "VALIDATION" });
     expect((await framework.search({ query: "architecture", topN: maxTopN })).hits).toHaveLength(1);
+  });
+
+  test("the status report bounds its issue list and summarizes the rest", async () => {
+    const { framework, root } = await fixture();
+    const total = STATUS_ISSUE_LIMIT + 10;
+    for (let index = 0; index < total; index++)
+      await writeFile(
+        path.join(root, "projects", `broken-${index}.md`),
+        "---\nid: [broken\n---\nPreserve this text",
+      );
+    const report = await framework.resync();
+    expect(report.issues).toHaveLength(total);
+    const status = framework.status();
+    expect(status.issues).toHaveLength(STATUS_ISSUE_LIMIT);
+    expect(status.issuesTotal).toBe(total);
+    expect(status.issuesTruncated).toBe(true);
+    expect(status.issuesByCode).toEqual({ YAML: total });
+    expect((status.issues as { path: string }[])[0]?.path).toBe("projects/broken-0.md");
+    const lastSync = status.lastSync as {
+      issues: unknown[];
+      issuesTotal: number;
+      issuesTruncated: boolean;
+      issuesByCode: Record<string, number>;
+    };
+    expect(lastSync.issues).toHaveLength(STATUS_ISSUE_LIMIT);
+    expect(lastSync.issuesTotal).toBe(total);
+    expect(lastSync.issuesTruncated).toBe(true);
+    expect(lastSync.issuesByCode).toEqual({ YAML: total });
+    // The bounded copy must not shorten the report the resync tool returns.
+    expect((await framework.resync()).issues).toHaveLength(total);
+  });
+
+  test("an embedding provider failure names the full-text recovery", async () => {
+    const provider = new TestEmbeddingProvider();
+    const { framework } = await fixture({ provider });
+    provider.beforeQuery = async () => {
+      throw new Error("Provider temporarily offline");
+    };
+    const failure = await framework
+      .search({ query: "architecture", mode: "semantic" })
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(FrameworkError);
+    if (!(failure instanceof FrameworkError)) throw new Error("Expected a framework error.");
+    expect(failure.code).toBe("EMBEDDINGS_UNAVAILABLE");
+    expect(failure.message).toContain("Provider temporarily offline");
+    expect(failure.message).toContain('Search with mode "fulltext"');
+  });
+
+  test("an unknown type error names the registered types", async () => {
+    const { framework } = await fixture();
+    const failure = await framework.list("does_not_exist").catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(FrameworkError);
+    if (!(failure instanceof FrameworkError)) throw new Error("Expected a framework error.");
+    expect(failure.code).toBe("UNKNOWN_TYPE");
+    expect(failure.message).toBe("Unknown object type 'does_not_exist'.");
+    expect(failure.details.registeredTypes).toEqual(
+      coreDefinitions.map((definition) => definition.name).sort(),
+    );
   });
 
   test("onEvent reports every documented event kind and unsubscription stops delivery", async () => {

@@ -1,5 +1,14 @@
 import type { Schema } from "effect";
 
+/** The largest number of objects one list call may return. */
+export const LIST_LIMIT_MAX = 1000;
+
+/** The number of objects one list call returns when the caller sets no limit. */
+export const LIST_LIMIT_DEFAULT = 50;
+
+/** The number of synchronization issues the status report lists before it summarizes the rest. */
+export const STATUS_ISSUE_LIMIT = 50;
+
 export interface BaseObject {
   readonly id: string;
   readonly name: string;
@@ -198,7 +207,8 @@ export interface SyncReport {
 
 export interface ObjectFacade {
   readonly definitions: readonly ObjectDefinition[];
-  readonly config?: Pick<FrameworkConfig, "mcp">;
+  // The search bounds are advertised to clients, so a facade that knows them must expose them.
+  readonly config?: Pick<FrameworkConfig, "mcp"> & Partial<Pick<FrameworkConfig, "search">>;
   create(type: string, object: unknown, body?: string, signal?: AbortSignal): Promise<StoredObject>;
   get(type: string, id: string, signal?: AbortSignal): Promise<StoredObject>;
   update(
