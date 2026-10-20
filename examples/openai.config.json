@@ -1,6 +1,6 @@
 {
-  "root": "../objects",
-  "sqlite": { "path": "../.object-mcp/openai-index.sqlite" },
+  "root": "../.local/.structree/objects",
+  "sqlite": { "path": "../.local/.structree/.cache/openai-index.sqlite" },
   "embeddings": {
     "provider": "openai",
     "model": "text-embedding-3-small",

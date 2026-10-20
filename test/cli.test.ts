@@ -5,6 +5,7 @@ import path from "node:path";
 import { MarkdownCodec } from "../src/lib/vault/codec.ts";
 
 const project = path.resolve(import.meta.dir, "..");
+const cliScript = path.join(project, "src/cli.ts");
 const bun = process.env.BUN_BIN ?? "bun";
 const syntheticSecret = "SYNTHETIC-Q01-VALUE-4b91de";
 
@@ -14,10 +15,14 @@ interface CliResult {
   readonly stderr: string;
 }
 
-/** The shipped CLI runs as a subprocess so exit codes and output are observed, not assumed. */
-async function runCli(args: readonly string[]): Promise<CliResult> {
-  const child = Bun.spawn([bun, "src/cli.ts", ...args], {
-    cwd: project,
+/**
+ * The shipped CLI runs as a subprocess so exit codes and output are observed, not assumed.
+ * The working directory is explicit because a project-local configuration file is read
+ * from the process working directory and would otherwise override the test configuration.
+ */
+async function runCli(args: readonly string[], cwd: string = project): Promise<CliResult> {
+  const child = Bun.spawn([bun, cliScript, ...args], {
+    cwd,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -85,7 +90,7 @@ describe("CLI status and sync contracts", () => {
   test("the status command prints the index, registry, and embedding state as JSON", async () => {
     const { directory, config } = await workspace();
     try {
-      const result = await runCli(["status", "--config", config]);
+      const result = await runCli(["status", "--config", config], directory);
       expect(result.code).toBe(0);
       const status = JSON.parse(result.stdout) as Record<string, unknown>;
       expect(status.root).toBe(path.join(directory, "objects"));
@@ -128,7 +133,7 @@ describe("CLI status and sync contracts", () => {
         path.join(directory, "objects", "projects", "bad.md"),
         `---\nid: demo\nsecret_value: ${syntheticSecret}\n\tbad: tab-indented\n---\nbody\n`,
       );
-      const result = await runCli(["sync", "--config", config]);
+      const result = await runCli(["sync", "--config", config], directory);
       expect(result.code).toBe(2);
       const report = JSON.parse(result.stdout) as {
         scanned: number;
@@ -147,7 +152,7 @@ describe("CLI status and sync contracts", () => {
   test("a clean sync reports no issues and exits with code 0", async () => {
     const { directory, config } = await workspace();
     try {
-      const result = await runCli(["sync", "--config", config]);
+      const result = await runCli(["sync", "--config", config], directory);
       expect(result.code).toBe(0);
       const report = JSON.parse(result.stdout) as { issues: unknown[] };
       expect(report.issues).toEqual([]);

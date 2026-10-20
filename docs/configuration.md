@@ -1,13 +1,13 @@
 # Configuration reference
 
-Configuration is validated by `FrameworkConfigSchema` in `src/lib/config.ts`. Partial configuration sections merge with the defaults. Unknown keys, null sections, invalid bounds, and unsupported provider/driver names fail before serving tools. JSON file paths resolve relative to the configuration file; `defineConfig(input, baseDirectory)` and `createFramework({baseDirectory,...})` provide the programmatic equivalent.
+Configuration is validated by `FrameworkConfigSchema` in `src/lib/config.ts`. Partial configuration sections merge with the defaults. Unknown keys, null sections, invalid bounds, and unsupported provider/driver names fail before serving tools. JSON file paths resolve relative to the configuration file; `defineConfig(input, baseDirectory)` and `createFramework({baseDirectory,...})` provide the programmatic equivalent. The CLI applies one further layer, the optional local override file described in [Local override file](#local-override-file).
 
 ## Storage and server
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `root` | `objects` | Authoritative Markdown directory. Each registry definition selects a distinct relative subtree. |
-| `sqlite.path` | `.object-mcp/index.sqlite` | Rebuildable search database. Must be outside `root`; `:memory:` is also accepted. |
+| `root` | `.local/.structree/objects` | Authoritative Markdown directory. Each registry definition selects a distinct relative subtree. |
+| `sqlite.path` | `.local/.structree/.cache/index.sqlite` | Rebuildable search database. Must be outside `root`; `:memory:` is also accepted. |
 | `sqlite.driver` | `better-sqlite3` | Native adapter; alternative `bun` uses `bun:sqlite`. |
 | `sqlite.busyTimeoutMs` | `5000` | Search-index SQLite busy timeout. |
 | `sqlite.extensionPath` | package-provided | Optional absolute or config-relative sqlite-vec extension path. |
@@ -15,9 +15,29 @@ Configuration is validated by `FrameworkConfigSchema` in `src/lib/config.ts`. Pa
 | `server.name` | `object-mcp` | MCP server identity. |
 | `server.version` | `0.1.0` | MCP server version. |
 
-The coordination database has a fixed name under the source root so all framework instances operating on that root use the same lock. It contains an empty coordination table, no source objects. Do not delete it while any instance is running. The search index and model cache can be discarded after shutting down all instances; startup then rebuilds search from Markdown, and missing models need preparation again.
+Relative values resolve against the base directory of their layer. Values from a JSON `--config` file resolve against that file's own directory, values from the local override file resolve against the project root, and the built-in defaults resolve against the project root for the CLI and against `baseDirectory` for programmatic use. The shipped JSON configurations set `root`, `sqlite.path`, and the model cache explicitly, so their data always resolves to the repository root.
+
+The coordination database has a fixed name under the source root so all framework instances operating on that root use the same lock. With the default source root it is `.local/.structree/objects/.object-mcp-lock.sqlite`. It contains an empty coordination table, no source objects. Do not delete it while any instance is running. The search index and model cache can be discarded after shutting down all instances; startup then rebuilds search from Markdown, and missing models need preparation again.
 
 Both native adapters were tested on Linux x64. Custom macOS SQLite loading is supported by configuration and its initialization guard is tested, but that platform was not exercised in this workspace.
+
+## Local override file
+
+The CLI reads `.local/.structree/config.yaml` from the project root whenever that file exists. The file is optional; without it only the built-in defaults and the `--config` file apply. It is a YAML document with the same key structure as the JSON configuration, and it is applied as the last layer: the values it sets replace both the built-in defaults and the values of an explicit `--config` file, while its partial sections merge with the layer below.
+
+Path values in this file resolve against the project root, which is the directory the command runs in. Relative paths inside a JSON `--config` file keep the other rule and resolve against that file's own directory.
+
+The file is ignored by Git with the rest of `.local/`, so it stays local to the working copy.
+
+```yaml
+embeddings:
+  provider: onnx
+  model: Xenova/multilingual-e5-base
+  revision: "<commit that pins the selected export>"
+  dimensions: 768
+```
+
+The `embeddings` section follows the provider rules of the JSON configuration. Naming a provider selects that provider's defaults before the section's own values are applied. A section without `provider` keeps the provider of the layer below it, and a `disabled` provider owns no provider-specific fields, so model and dimension values are dropped while the provider stays disabled. `revision` must pin the same export as `model`; a local model directory replaces both. The snapshot for the selected export still has to be prepared, and the model identity participates in the cache fingerprint, so changing it invalidates the cached vectors of the affected objects. Because this file is ignored by Git, a literal `embeddings.apiKey` belongs here and not in a tracked configuration file.
 
 ## MCP input repair
 
@@ -92,7 +112,8 @@ Set `embeddings.provider` to `onnx`.
 | `revision` | `761b726dd34fb83930e26aab4e9ac3899aa1fa78` | Immutable Hub commit. Local model directories are fingerprinted by file content. |
 | `dimensions` | `384` | Required vector dimension. Inference output is validated. |
 | `dtype` | `q8` | `q8`, `fp32`, `fp16`, or `q4`; matching ONNX files must exist. |
-| `cacheDir` | `.object-mcp/models` | Directory for verified snapshots; must be outside source root. |
+| `device` | `cpu` | Execution provider: `cpu` or `cuda`. The CPU execution provider is the default and always available. `cuda` needs the CUDA 12 runtime libraries present for the installed onnxruntime-node build; a backend that cannot be initialized fails with the `DEVICE_UNAVAILABLE` error code instead of an opaque runtime failure. The device participates in the cache fingerprint, so switching it invalidates the cached vectors. |
+| `cacheDir` | `.local/.structree/.cache/models` | Directory for verified snapshots; must be outside source root. |
 | `localFilesOnly` | `true` | Require a prepared snapshot. Set false only when explicitly permitting runtime model downloads. |
 | `queryPrefix` | `query: ` | Prefix applied to query windows. |
 | `documentPrefix` | `passage: ` | Prefix applied to document windows. |
@@ -109,8 +130,9 @@ Set `embeddings.provider` to `openai`. The provider selection chooses these defa
 | --- | --- | --- |
 | `model` | `text-embedding-3-small` | Embedding model/deployment identifier. |
 | `dimensions` | `1536` | Requested and validated output dimensions. |
-| `baseUrl` | `https://api.openai.com/v1` | Embeddings endpoint base URL. Redirects are rejected. |
-| `apiKeyEnv` | `OPENAI_API_KEY` | Environment variable read at request time. |
+| `baseUrl` | `https://api.openai.com/v1` | Embeddings endpoint base URL. An external OpenAI API compatible provider is selected with this value; the request is posted to `<baseUrl>/embeddings`. Redirects, embedded credentials, query strings, and fragments are rejected. |
+| `apiKeyEnv` | `OPENAI_API_KEY` | Environment variable read at request time. An empty value means the request is sent without an `Authorization` header. A named but unset variable fails with the `API_KEY_MISSING` error code. |
+| `apiKey` | unset | Literal API key value. Prefer `apiKeyEnv`. A literal key belongs only in the git-ignored local file `.local/.structree/config.yaml`, never in a tracked configuration file, and it is never written to the fingerprint, to an error message, or to any file. |
 | `batchSize` | `32` | Maximum inputs per HTTP batch, also subject to provider limits. |
 | `timeoutMs` | `30000` | Timeout per request attempt. |
 | `retries` | `3` | Additional transient-error attempts. |
@@ -118,6 +140,8 @@ Set `embeddings.provider` to `openai`. The provider selection chooses these defa
 | `queryPrefix` | empty | Optional endpoint/model-specific prefix. |
 | `documentPrefix` | empty | Optional endpoint/model-specific prefix. |
 
-Provide the key through your host's secret/environment configuration, then start with `examples/openai.config.json`. It selects a separate cache file from the default ONNX example. API credentials never enter source Markdown or cache fingerprints.
+Provide the key through your host's secret/environment configuration, then start with `examples/openai.config.json`. It selects the separate cache file `.local/.structree/.cache/openai-index.sqlite`. API credentials never enter source Markdown or cache fingerprints.
+
+The request carries the `dimensions` field only for models of the `text-embedding-3` family. Every other model, including a custom model of an external OpenAI API compatible server, receives the request without that field, because such a server may reject it.
 
 Set `embeddings.provider` to `disabled` for metadata and full-text indexing only. An injected custom provider is owned by the framework and its `close()` is called at framework disposal. Its fingerprint must change whenever its output vector space or preprocessing changes.

@@ -1,9 +1,13 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { Schema } from "effect";
+import { parse as parseYaml } from "yaml";
 import { FrameworkError } from "./errors.ts";
 import { DEFAULT_REPAIR_OPTIONS } from "./json-repair/types.ts";
 import type { EmbeddingConfig, FrameworkConfig } from "./types.ts";
+
+export const LOCAL_STATE_RELATIVE_DIRECTORY = ".local/.structree";
+export const LOCAL_CONFIG_RELATIVE_PATH = `${LOCAL_STATE_RELATIVE_DIRECTORY}/config.yaml`;
 
 const positive = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
@@ -36,6 +40,8 @@ const OnnxConfig = Schema.Struct({
   revision: text,
   dimensions: positive,
   dtype: Schema.Literals(["q8", "fp32", "fp16", "q4"]),
+  // The execution provider selects the ONNX Runtime backend; the CPU backend is always available.
+  device: Schema.Literals(["cpu", "cuda"]),
   cacheDir: text,
   localFilesOnly: Schema.Boolean,
   queryPrefix: Schema.String,
@@ -48,7 +54,9 @@ const OpenAIConfig = Schema.Struct({
   model: text,
   dimensions: positive,
   baseUrl: text,
-  apiKeyEnv: text,
+  // An empty name selects a keyless endpoint instead of an environment variable.
+  apiKeyEnv: Schema.String,
+  apiKey: Schema.optionalKey(Schema.String),
   batchSize: positive,
   timeoutMs: positive,
   retries: nonnegative,
@@ -99,7 +107,8 @@ const onnxDefaults: Extract<EmbeddingConfig, { provider: "onnx" }> = {
   revision: "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
   dimensions: 384,
   dtype: "q8",
-  cacheDir: ".object-mcp/models",
+  device: "cpu",
+  cacheDir: `${LOCAL_STATE_RELATIVE_DIRECTORY}/.cache/models`,
   localFilesOnly: true,
   queryPrefix: "query: ",
   documentPrefix: "passage: ",
@@ -121,8 +130,12 @@ const openaiDefaults: Extract<EmbeddingConfig, { provider: "openai" }> = {
 };
 
 export const defaultConfig: FrameworkConfig = {
-  root: "objects",
-  sqlite: { path: ".object-mcp/index.sqlite", driver: "better-sqlite3", busyTimeoutMs: 5000 },
+  root: `${LOCAL_STATE_RELATIVE_DIRECTORY}/objects`,
+  sqlite: {
+    path: `${LOCAL_STATE_RELATIVE_DIRECTORY}/.cache/index.sqlite`,
+    driver: "better-sqlite3",
+    busyTimeoutMs: 5000,
+  },
   embeddings: onnxDefaults,
   chunking: { size: 1200, overlap: 0.1 },
   sync: {
@@ -285,7 +298,157 @@ export function defineConfig(
   };
 }
 
-export async function loadConfig(filename: string): Promise<FrameworkConfig> {
+export interface LoadConfigOptions {
+  readonly projectRoot?: string;
+  readonly localConfigFile?: string | null;
+}
+
+const MERGEABLE_SECTIONS = ["sqlite", "chunking", "sync", "search", "server"] as const;
+
+function providerDefaultsFor(provider: unknown): Record<string, unknown> {
+  if (provider === "openai") return { ...openaiDefaults };
+  if (provider === "disabled") return { provider: "disabled" };
+  return { ...onnxDefaults };
+}
+
+function resolveLayerPaths(layer: Record<string, unknown>, base: string): Record<string, unknown> {
+  const resolved: Record<string, unknown> = { ...layer };
+  if (typeof resolved.root === "string") resolved.root = path.resolve(base, resolved.root);
+  const sqlite = resolved.sqlite;
+  if (isRecord(sqlite)) {
+    const next: Record<string, unknown> = { ...sqlite };
+    if (typeof next.path === "string" && next.path !== ":memory:")
+      next.path = path.resolve(base, next.path);
+    if (typeof next.extensionPath === "string")
+      next.extensionPath = path.resolve(base, next.extensionPath);
+    if (typeof next.customSQLite === "string")
+      next.customSQLite = path.resolve(base, next.customSQLite);
+    resolved.sqlite = next;
+  }
+  const embeddings = resolved.embeddings;
+  if (isRecord(embeddings)) {
+    const next: Record<string, unknown> = { ...embeddings };
+    if (typeof next.cacheDir === "string") next.cacheDir = path.resolve(base, next.cacheDir);
+    if (
+      typeof next.model === "string" &&
+      (next.model.startsWith(".") || path.isAbsolute(next.model))
+    )
+      next.model = path.resolve(base, next.model);
+    resolved.embeddings = next;
+  }
+  return resolved;
+}
+
+function mergeSection(jsonValue: unknown, yamlValue: unknown): unknown {
+  if (yamlValue === undefined) return jsonValue;
+  if (!isRecord(yamlValue)) return yamlValue;
+  if (jsonValue === undefined) return yamlValue;
+  if (!isRecord(jsonValue)) return jsonValue;
+  return { ...jsonValue, ...yamlValue };
+}
+
+function mergeMcpSection(jsonValue: unknown, yamlValue: unknown): unknown {
+  const section = mergeSection(jsonValue, yamlValue);
+  if (!isRecord(section)) return section;
+  const jsonRepair = isRecord(jsonValue) ? jsonValue.inputRepair : undefined;
+  const yamlRepair = isRecord(yamlValue) ? yamlValue.inputRepair : undefined;
+  const repair = mergeSection(jsonRepair, yamlRepair);
+  if (repair === undefined) {
+    const rest = { ...section };
+    delete rest.inputRepair;
+    return rest;
+  }
+  return { ...section, inputRepair: repair };
+}
+
+function mergeEmbeddings(
+  jsonLayer: Record<string, unknown>,
+  yamlLayer: Record<string, unknown>,
+): unknown {
+  const jsonEmbeddings = jsonLayer.embeddings;
+  const yamlEmbeddings = yamlLayer.embeddings;
+  if (yamlEmbeddings !== undefined && !isRecord(yamlEmbeddings)) return yamlEmbeddings;
+  if (jsonEmbeddings !== undefined && !isRecord(jsonEmbeddings)) return jsonEmbeddings;
+  const jsonProvider = isRecord(jsonEmbeddings) ? jsonEmbeddings.provider : undefined;
+  const yamlProvider = isRecord(yamlEmbeddings) ? yamlEmbeddings.provider : undefined;
+  let merged: Record<string, unknown>;
+  if (yamlProvider !== undefined) {
+    merged = { ...providerDefaultsFor(yamlProvider), ...yamlEmbeddings };
+  } else if (jsonProvider !== undefined) {
+    merged = { ...providerDefaultsFor(jsonProvider), ...jsonEmbeddings, ...yamlEmbeddings };
+  } else {
+    merged = { ...onnxDefaults, ...jsonEmbeddings, ...yamlEmbeddings };
+  }
+  // A disabled provider owns no provider specific fields, so the other layer cannot leak them in.
+  if (merged.provider === "disabled") return { provider: "disabled" };
+  return merged;
+}
+
+function mergeLayers(
+  jsonLayer: Record<string, unknown>,
+  yamlLayer: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...jsonLayer };
+  for (const [key, value] of Object.entries(yamlLayer)) {
+    if (key === "mcp") {
+      merged.mcp = mergeMcpSection(jsonLayer.mcp, value);
+      continue;
+    }
+    if ((MERGEABLE_SECTIONS as readonly string[]).includes(key)) {
+      merged[key] = mergeSection(jsonLayer[key], value);
+      continue;
+    }
+    merged[key] = value;
+  }
+  merged.embeddings = mergeEmbeddings(jsonLayer, yamlLayer);
+  return merged;
+}
+
+function isMissingFileError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+async function readLocalLayer(
+  file: string,
+  base: string,
+): Promise<Record<string, unknown> | undefined> {
+  const absolute = path.resolve(file);
+  let content: string;
+  try {
+    content = await readFile(absolute, "utf8");
+  } catch (error) {
+    if (isMissingFileError(error)) return undefined;
+    throw new FrameworkError(
+      "CONFIG",
+      `Cannot read YAML configuration ${absolute}: ${String(error)}`,
+      {},
+      { cause: error },
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(content);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new FrameworkError(
+      "CONFIG",
+      `Cannot load YAML configuration ${absolute}: ${reason}`,
+      {},
+      { cause: error },
+    );
+  }
+  if (parsed === null || parsed === undefined) return {};
+  if (!isRecord(parsed)) throw new FrameworkError("CONFIG", "Configuration must be an object.");
+  return resolveLayerPaths(parsed, base);
+}
+
+export async function loadConfig(
+  filename: string,
+  options?: LoadConfigOptions,
+): Promise<FrameworkConfig> {
+  const projectRoot = options?.projectRoot ?? process.cwd();
   const absolute = path.resolve(filename);
   let input: unknown;
   try {
@@ -298,5 +461,15 @@ export async function loadConfig(filename: string): Promise<FrameworkConfig> {
       { cause: error },
     );
   }
-  return defineConfig(input as FrameworkConfigInput, path.dirname(absolute));
+  if (input === null || input === undefined || !isRecord(input))
+    throw new FrameworkError("CONFIG", "Configuration must be an object.");
+  const jsonLayer = resolveLayerPaths(input, path.dirname(absolute));
+  const localConfigFile =
+    options?.localConfigFile === null
+      ? undefined
+      : (options?.localConfigFile ?? path.resolve(projectRoot, LOCAL_CONFIG_RELATIVE_PATH));
+  const yamlLayer =
+    localConfigFile === undefined ? undefined : await readLocalLayer(localConfigFile, projectRoot);
+  const merged = yamlLayer === undefined ? jsonLayer : mergeLayers(jsonLayer, yamlLayer);
+  return defineConfig(merged as FrameworkConfigInput, projectRoot);
 }

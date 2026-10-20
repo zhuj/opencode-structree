@@ -11,7 +11,11 @@ test("repaired MCP writes reach Markdown and search while rejected repairs prese
   const directory = await mkdtemp(path.join(os.tmpdir(), "mcp-repair-filesystem-"));
   const framework = await createFramework({
     baseDirectory: directory,
-    config: { embeddings: { provider: "disabled" }, sync: { watch: false, rescanIntervalMs: 0 } },
+    config: {
+      root: "objects",
+      embeddings: { provider: "disabled" },
+      sync: { watch: false, rescanIntervalMs: 0 },
+    },
   });
   const handler = createMcpHandler(() => createMcpServer(framework));
   const client = new Client(

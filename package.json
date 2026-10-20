@@ -14,6 +14,7 @@
     "./vault": "./src/lib/vault/index.ts"
   },
   "scripts": {
+    "build": "bun build ./src/cli.ts --target=bun --packages=external --outdir=dist",
     "start": "bun src/cli.ts serve --config object-mcp.config.json",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
@@ -24,6 +25,7 @@
     "biome:check": "biome check . --error-on-warnings",
     "biome:fix": "biome check --write .",
     "smoke": "python3 scripts/smoke-stdio.py",
+    "smoke:build": "bun run build && OBJECT_MCP_CLI=dist/cli.js bun run smoke",
     "check": "bun run biome:check && bun run typecheck && bun test && bun run smoke",
     "prepare-model": "bun scripts/prepare-model.ts --config object-mcp.config.json",
     "seed-example": "bun scripts/seed-example.ts --config object-mcp.config.json"

@@ -70,6 +70,7 @@ export type EmbeddingConfig =
       readonly revision: string;
       readonly dimensions: number;
       readonly dtype: "q8" | "fp32" | "fp16" | "q4";
+      readonly device: "cpu" | "cuda";
       readonly cacheDir: string;
       readonly localFilesOnly: boolean;
       readonly queryPrefix: string;
@@ -83,6 +84,8 @@ export type EmbeddingConfig =
       readonly dimensions: number;
       readonly baseUrl: string;
       readonly apiKeyEnv: string;
+      // A literal key overrides the environment variable; it never enters a fingerprint or an error message.
+      readonly apiKey?: string;
       readonly batchSize: number;
       readonly timeoutMs: number;
       readonly retries: number;

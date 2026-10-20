@@ -12,7 +12,10 @@ import {
 import { createEmbeddingProvider } from "../src/lib/embeddings/index.ts";
 import { resolveModelDirectory } from "../src/lib/embeddings/model-cache.ts";
 import {
+  buildOnnxRuntimeOptions,
   createOnnxEmbeddingProvider,
+  isOnnxDeviceFailure,
+  mapOnnxDeviceFailure,
   type OnnxEmbeddingConfig,
   splitByTokenBudget,
 } from "../src/lib/embeddings/onnx.ts";
@@ -40,6 +43,7 @@ const onnxConfig: OnnxEmbeddingConfig = {
   revision: "751bff37182d3f1213fa05d7196b954e230abad9",
   dimensions: 384,
   dtype: "q8",
+  device: "cpu",
   cacheDir: "/tmp/object-mcp-embedding-tests-unused",
   localFilesOnly: true,
   queryPrefix: "",
@@ -242,6 +246,167 @@ describe("OpenAI-compatible HTTP provider with mocked transport", () => {
   });
 });
 
+describe("OpenAI-compatible credential resolution", () => {
+  test("a literal API key is sent as the bearer token and stays out of the fingerprint", async () => {
+    const literal = "sk-literal-secret-value";
+    const authorizations: Array<string | null> = [];
+    const provider = new OpenAIEmbeddingProvider(
+      { ...openaiConfig, apiKey: literal },
+      {
+        fetch: async (_url, init) => {
+          authorizations.push(new Headers(init?.headers).get("authorization"));
+          return Response.json({ data: [{ index: 0, embedding: [1, 0] }] });
+        },
+      },
+    );
+    try {
+      await provider.embed(["input"], "query");
+      expect(authorizations[0]).toBe(`Bearer ${literal}`);
+      expect(provider.fingerprint).not.toContain(literal);
+      const withoutKey = new OpenAIEmbeddingProvider(openaiConfig);
+      expect(withoutKey.fingerprint).toBe(provider.fingerprint);
+      await withoutKey.close();
+    } finally {
+      await provider.close();
+    }
+  });
+
+  test("the configured environment variable supplies the key when no literal key is set", async () => {
+    const previous = process.env.OBJECT_MCP_TEST_KEY;
+    process.env.OBJECT_MCP_TEST_KEY = "environment-key";
+    const authorizations: Array<string | null> = [];
+    const provider = new OpenAIEmbeddingProvider(openaiConfig, {
+      fetch: async (_url, init) => {
+        authorizations.push(new Headers(init?.headers).get("authorization"));
+        return Response.json({ data: [{ index: 0, embedding: [1, 0] }] });
+      },
+    });
+    try {
+      await provider.embed(["input"], "query");
+      expect(authorizations[0]).toBe("Bearer environment-key");
+    } finally {
+      await provider.close();
+      if (previous === undefined) delete process.env.OBJECT_MCP_TEST_KEY;
+      else process.env.OBJECT_MCP_TEST_KEY = previous;
+    }
+  });
+
+  test("an empty environment variable name sends no Authorization header", async () => {
+    const authorizations: Array<string | null> = [];
+    const provider = new OpenAIEmbeddingProvider(
+      { ...openaiConfig, apiKeyEnv: "" },
+      {
+        fetch: async (_url, init) => {
+          authorizations.push(new Headers(init?.headers).get("authorization"));
+          return Response.json({ data: [{ index: 0, embedding: [1, 0] }] });
+        },
+      },
+    );
+    try {
+      await provider.embed(["input"], "query");
+      expect(authorizations[0]).toBeNull();
+    } finally {
+      await provider.close();
+    }
+  });
+
+  test("a named but unset environment variable still raises API_KEY_MISSING", async () => {
+    const previous = process.env.OBJECT_MCP_TEST_KEY;
+    delete process.env.OBJECT_MCP_TEST_KEY;
+    const provider = new OpenAIEmbeddingProvider(openaiConfig, {
+      fetch: async () => {
+        throw new Error("Must not call fetch without credentials");
+      },
+    });
+    try {
+      const failure = await provider.embed(["input"], "query").catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(EmbeddingError);
+      expect((failure as EmbeddingError).code).toBe("API_KEY_MISSING");
+      expect((failure as EmbeddingError).message).toContain("OBJECT_MCP_TEST_KEY");
+    } finally {
+      await provider.close();
+      if (previous !== undefined) process.env.OBJECT_MCP_TEST_KEY = previous;
+    }
+  });
+
+  test("the HTTP error message never repeats the key", async () => {
+    const literal = "sk-literal-secret-value";
+    const provider = new OpenAIEmbeddingProvider(
+      { ...openaiConfig, apiKey: literal },
+      {
+        fetch: async () => new Response("private source text", { status: 400 }),
+      },
+    );
+    try {
+      const failure = await provider.embed(["input"], "query").catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(EmbeddingError);
+      expect((failure as EmbeddingError).code).toBe("HTTP_ERROR");
+      expect((failure as EmbeddingError).message).not.toContain(literal);
+      expect((failure as EmbeddingError).message).not.toContain("sk-literal");
+    } finally {
+      await provider.close();
+    }
+  });
+
+  test("a base URL carrying a query or fragment is rejected before any request", () => {
+    expect(
+      () =>
+        new OpenAIEmbeddingProvider({
+          ...openaiConfig,
+          baseUrl: "https://embedding-test.invalid/v1?api_key=leaked",
+        }),
+    ).toThrow("query");
+    expect(
+      () =>
+        new OpenAIEmbeddingProvider({
+          ...openaiConfig,
+          baseUrl: "https://embedding-test.invalid/v1#api_key=leaked",
+        }),
+    ).toThrow("query");
+  });
+});
+
+describe("OpenAI-compatible request body compatibility", () => {
+  test("dimensions are sent for the text-embedding-3 family and omitted for other models", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const provider = new OpenAIEmbeddingProvider(
+      { ...openaiConfig, model: "text-embedding-3-small" },
+      {
+        apiKey: () => "synthetic-key",
+        fetch: async (_url, init) => {
+          bodies.push(JSON.parse(String(init?.body)));
+          return Response.json({ data: [{ index: 0, embedding: [1, 0] }] });
+        },
+      },
+    );
+    try {
+      await provider.embed(["input"], "query");
+    } finally {
+      await provider.close();
+    }
+    expect(bodies[0]?.dimensions).toBe(2);
+
+    const otherBodies: Array<Record<string, unknown>> = [];
+    const other = new OpenAIEmbeddingProvider(
+      { ...openaiConfig, model: "custom-embedding-model" },
+      {
+        apiKey: () => "synthetic-key",
+        fetch: async (_url, init) => {
+          otherBodies.push(JSON.parse(String(init?.body)));
+          return Response.json({ data: [{ index: 0, embedding: [1, 0] }] });
+        },
+      },
+    );
+    try {
+      await other.embed(["input"], "query");
+    } finally {
+      await other.close();
+    }
+    expect(otherBodies[0]).not.toHaveProperty("dimensions");
+    expect(otherBodies[0]?.model).toBe("custom-embedding-model");
+  });
+});
+
 describe("ONNX provider identity and lazy initialization", () => {
   test("disabled and unused pinned remote providers do not load a model", async () => {
     expect(await createEmbeddingProvider({ provider: "disabled" })).toBeUndefined();
@@ -269,6 +434,74 @@ describe("ONNX provider identity and lazy initialization", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+});
+
+describe("ONNX execution device", () => {
+  test("the runtime options carry the configured device, dtype, and cache directory", () => {
+    const cpu = buildOnnxRuntimeOptions(onnxConfig);
+    expect(cpu.device).toBe("cpu");
+    expect(cpu.dtype).toBe("q8");
+    expect(cpu.cache_dir).toBe(onnxConfig.cacheDir);
+    expect(cpu.revision).toBe(onnxConfig.revision);
+    expect(cpu.local_files_only).toBe(true);
+    const cuda = buildOnnxRuntimeOptions({ ...onnxConfig, device: "cuda" });
+    expect(cuda.device).toBe("cuda");
+    expect(cuda.dtype).toBe("q8");
+    expect(cuda.cache_dir).toBe(onnxConfig.cacheDir);
+    expect(cuda.local_files_only).toBe(true);
+  });
+
+  test("the execution device participates in the cache identity", async () => {
+    const cpu = await createOnnxEmbeddingProvider(onnxConfig);
+    const cuda = await createOnnxEmbeddingProvider({ ...onnxConfig, device: "cuda" });
+    expect(cpu.fingerprint).not.toBe(cuda.fingerprint);
+    expect(cpu.fingerprint).toHaveLength(64);
+    expect(cuda.fingerprint).toHaveLength(64);
+    await Promise.all([cpu.close(), cuda.close()]);
+  });
+
+  test("a local model directory keeps its content identity under a non-default device", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "object-mcp-model-device-"));
+    try {
+      await writeFile(path.join(directory, "config.json"), '{"value":1}');
+      const cpu = await createOnnxEmbeddingProvider({
+        ...onnxConfig,
+        model: directory,
+        device: "cpu",
+      });
+      const cuda = await createOnnxEmbeddingProvider({
+        ...onnxConfig,
+        model: directory,
+        device: "cuda",
+      });
+      expect(cuda.fingerprint).not.toBe(cpu.fingerprint);
+      await expect(
+        createOnnxEmbeddingProvider({ ...onnxConfig, device: "cuda", revision: "main" }),
+      ).rejects.toThrow("commit revision");
+      await Promise.all([cpu.close(), cuda.close()]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("a CUDA initialization failure is reported as DEVICE_UNAVAILABLE", () => {
+    const failure = new Error("Failed to create session: CUDAExecutionProvider is not available");
+    expect(isOnnxDeviceFailure(failure, "cuda")).toBe(true);
+    expect(isOnnxDeviceFailure(failure, "cpu")).toBe(false);
+    const mapped = mapOnnxDeviceFailure(failure, "cuda");
+    expect(mapped).toBeInstanceOf(EmbeddingError);
+    expect((mapped as EmbeddingError).code).toBe("DEVICE_UNAVAILABLE");
+    expect((mapped as EmbeddingError).message).toContain("CUDA");
+    expect((mapped as EmbeddingError).message).toContain("CUDA 12");
+    expect((mapped as EmbeddingError).message).toContain("cpu");
+    const unrelated = new Error("Local model directory is empty");
+    expect(mapOnnxDeviceFailure(unrelated, "cuda")).toBe(unrelated);
+    expect(mapOnnxDeviceFailure(unrelated, "cpu")).toBe(unrelated);
+    const missing = Object.assign(new Error("ENOENT: no such file or directory"), {
+      code: "ENOENT",
+    });
+    expect(mapOnnxDeviceFailure(missing, "cuda")).toBe(missing);
   });
 });
 

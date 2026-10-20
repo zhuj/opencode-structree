@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "structree": {
+        "type": "local",
+        "command": ["bun", "dist/cli.js", "serve", "--config", "examples/fulltext.config.json"],
+        "cwd": "."
+      }
+    }
+  }
+}

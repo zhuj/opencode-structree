@@ -5,6 +5,9 @@ export {
   defineConfig,
   type FrameworkConfigInput,
   FrameworkConfigSchema,
+  LOCAL_CONFIG_RELATIVE_PATH,
+  LOCAL_STATE_RELATIVE_DIRECTORY,
+  type LoadConfigOptions,
   loadConfig,
   McpInputRepairConfigSchema,
 } from "./config.ts";

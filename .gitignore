@@ -1,4 +1,5 @@
 node_modules/
+/dist/
 .object-mcp/
 **/.object-mcp-lock.sqlite*
 **/.object-mcp-*.tmp

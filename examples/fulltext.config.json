@@ -1,5 +1,5 @@
 {
-  "root": "../objects",
-  "sqlite": { "path": "../.object-mcp/index.sqlite" },
+  "root": "../.local/.structree/objects",
+  "sqlite": { "path": "../.local/.structree/.cache/index.sqlite" },
   "embeddings": { "provider": "disabled" }
 }

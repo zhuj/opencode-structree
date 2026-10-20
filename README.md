@@ -12,6 +12,8 @@ All reusable implementation now lives in **`src/lib`**, with no imports of the c
 
 ## Quick start
 
+For a full-text-only OpenCode setup without model downloads or example seeding, use [Build and OpenCode V2](#build-and-opencode-v2).
+
 Requirements: Bun **1.4.3 or later** and a platform supported by the native SQLite/ONNX packages. The implementation was verified on Linux x64 with the exact versions in the lockfiles. Model weights are downloaded separately.
 
 ```sh
@@ -22,9 +24,9 @@ bun run seed-example
 bun start
 ```
 
-`ONNXRUNTIME_NODE_INSTALL=skip` skips the optional ONNX GPU download; the CPU runtime is bundled in the dependency. `prepare-model` explicitly downloads the pinned multilingual E5 q8 model, verifies its file hashes, and runs a synthetic inference check. Normal server operation then uses the local snapshot. `seed-example` creates one example of each entity; existing example IDs are left intact.
+`ONNXRUNTIME_NODE_INSTALL=skip` skips the optional ONNX GPU download; the CPU runtime is bundled in the dependency. `embeddings.device` selects the execution provider: `cpu` is the default and always available, while `cuda` needs the CUDA 12 runtime libraries present for the installed onnxruntime-node build. `prepare-model` explicitly downloads the pinned multilingual E5 q8 model, verifies its file hashes, and runs a synthetic inference check. Normal server operation then uses the local snapshot. `seed-example` creates one example of each entity; existing example IDs are left intact.
 
-`seed-example` writes those twelve examples into the configured source root, which is `objects/` inside this repository for the included configuration. That path is **not** ignored by design: the seeded objects are authoritative source data, and tracking them can be intentional. A `git add .` here therefore offers the twelve example files for tracking. Remove them, or ignore `objects/` yourself, if you want to keep this working tree free of them.
+`seed-example` writes those twelve examples into the configured source root, which is `.local/.structree/objects` inside this repository for the included configuration. That directory sits under the ignored `.local/` path, so the seeded objects are authoritative source data that stays out of `git status`. They remain ordinary source files on disk: the framework reads, updates, and deletes them like any other object.
 
 `bun start` communicates MCP on stdin/stdout. Connect it to an MCP client; it is not an interactive shell prompt. Diagnostics go to stderr. A typical client configuration is:
 
@@ -44,7 +46,7 @@ bun start
 }
 ```
 
-The included JSON configuration is complete. Relative paths resolve from its directory, so the MCP client's working directory does not alter the data location.
+The included JSON configuration is complete. Relative paths resolve from its directory, so the MCP client's working directory does not alter the data location that file selects. The optional local override file `.local/.structree/config.yaml` is read from the working directory and applied last; see [storage layout and local overrides](#storage-layout-and-local-overrides).
 
 For a first run using full-text search only:
 
@@ -60,6 +62,58 @@ bun src/cli.ts status --config object-mcp.config.json
 ```
 
 Both commands perform startup reconciliation. They print JSON and exit with code `2` when the reconciliation reports source or embedding issues. They never rewrite source files.
+
+## Build and OpenCode V2
+
+From the repository root, with Bun **1.4.3 or later**:
+
+```sh
+ONNXRUNTIME_NODE_INSTALL=skip bun install --frozen-lockfile
+bun run build
+bun dist/cli.js --help
+```
+
+The build bundles application code into `dist/cli.js` for Bun, leaving packages external. This is a JavaScript bundle, **not a standalone native executable**: keep `node_modules/` installed and Bun on the PATH available to OpenCode. Generated `dist/` files are ignored by Git.
+
+The project-local `.opencode/opencode.json` registers `mcp.servers.structree` for OpenCode V2. It runs `bun dist/cli.js serve --config examples/fulltext.config.json` with `cwd: "."`, which OpenCode resolves from the workspace root, not the `.opencode/` directory. No global configuration or permission grants are needed by this file.
+
+This configuration disables embeddings and uses full-text search only. It does not seed objects or download models; neither `prepare-model` nor `seed-example` is needed. Application paths resolve relative to `examples/fulltext.config.json`: `.local/.structree/objects` at the repository root holds authoritative Markdown data, while `.local/.structree/.cache/index.sqlite` is the ignored, rebuildable derived index. Objects created through MCP are real source files, not disposable cache data.
+
+Open or reload this repository as an OpenCode V2 project, then use `/mcps` to find `structree` and check its connection status. After source edits, run `bun run build` again and reconnect the server or reload the project to use the updated bundle. OpenCode does not build it automatically.
+
+## Storage layout and local overrides
+
+The default layout keeps every path the framework owns under `.local/.structree/` in the project root:
+
+| Path | Role |
+| --- | --- |
+| `.local/.structree/objects` | Authoritative Markdown source root. Each registry definition selects a distinct relative subtree below it. |
+| `.local/.structree/.cache/index.sqlite` | Rebuildable search database with object metadata, FTS5 data, and `sqlite-vec` embedding rows. |
+| `.local/.structree/.cache/models` | Verified snapshots of the pinned ONNX model. |
+| `.local/.structree/objects/.object-mcp-lock.sqlite` | Shared coordination lock for every instance using that source root. It holds no object data. |
+| `.local/.structree/config.yaml` | Optional local override file, read automatically when it exists. |
+
+`.local/` is ignored by Git, so the object data and the derived index no longer appear as untracked files in `git status`.
+
+Changing the configuration never moves existing objects: a source root is selected by configuration, and objects stay where they were written. The repository previously held a legacy `objects/` directory and a legacy `.object-mcp/` index; neither is used by the current configuration, and no migration code exists to move one to the other.
+
+### Local override file
+
+`.local/.structree/config.yaml` is an optional local override. The CLI reads it automatically whenever it exists; no flag selects it. It is a YAML document with the same key structure as the JSON configuration, and it is applied as the last layer: the values it sets replace the built-in defaults and the values of any `--config` file, while its partial sections merge with the layer below.
+
+Path values in this file resolve against the project root, which is the directory the command runs in. Relative paths inside a JSON `--config` file keep their own rule and resolve against that file's own directory.
+
+The file is ignored by Git with the rest of `.local/`, so it stays local to the working copy. Because it is applied last, it also applies to the server started through `.opencode/opencode.json`. A local `embeddings` section that names a provider replaces the disabled provider of `examples/fulltext.config.json`. A section without `provider` keeps the provider of the layer below it, and a disabled provider owns no model or dimension values, so those values are dropped.
+
+```yaml
+embeddings:
+  provider: onnx
+  model: Xenova/multilingual-e5-base
+  revision: "<commit that pins the selected export>"
+  dimensions: 768
+```
+
+`revision` must pin the same export as `model`; a local model directory replaces both. The snapshot for the selected export still has to be prepared, and the model identity participates in the cache fingerprint, so changing it invalidates the cached vectors of the affected objects. Because this file is ignored by Git, a literal `embeddings.apiKey` belongs here and not in a tracked configuration file.
 
 ## Registry and plugin integration
 
@@ -97,7 +151,7 @@ const registry = new ObjectRegistry(coreDefinitions).register({
 const objects = await createFramework({
   registry,
   baseDirectory: "/my/workspace",
-  config: { root: "objects" },
+  config: { root: ".local/.structree/objects" },
 });
 
 const server = new McpServer({ name: "my-plugin", version: "1.0.0" });
@@ -113,6 +167,8 @@ const unsubscribe = objects.onEvent(event => {
 unsubscribe();
 await objects.close();
 ```
+
+The example sets the source root explicitly. Programmatic path values resolve against `baseDirectory`, so omitting `config` selects the built-in default, `.local/.structree/objects`, under the same base directory.
 
 Alternatively, `createMcpServer(objects, info)` constructs the server for you. Closing one MCP server/transport does not close the shared facade; the host owns `objects.close()`. The standalone CLI connects cleanup to its actual stdio transport and process signals.
 
@@ -246,7 +302,9 @@ Embedding index `0` represents the **whole raw file, including frontmatter**. Po
 
 For text beyond a model's context window, the provider processes every internal window and normalizes their weighted mean. This whole-file vector is an approximation that covers all source content. It is not equivalent to unlimited-context attention. Retrieval chunks retain more local meaning. See [embedding details](docs/embeddings.md).
 
-The default provider uses local ONNX CPU inference with a pinned multilingual E5 model, 384 dimensions, q8 weights, and its query/passage prefixes. The OpenAI provider supports endpoint/model/dimensions configuration, batching, timeouts, retries, cancellation, and an API key read from an environment variable. Use `examples/openai.config.json` to select it. Object text and queries are sent to that configured endpoint when this provider is selected. The source package contains no API key.
+The default provider uses local ONNX CPU inference with a pinned multilingual E5 model, 384 dimensions, q8 weights, and its query/passage prefixes. `embeddings.device` selects the execution provider: `cpu`, the default and always available, or `cuda`, which needs the CUDA 12 runtime libraries present for the installed onnxruntime-node build and reports the `DEVICE_UNAVAILABLE` error code when the backend cannot be initialized. The device participates in the cache fingerprint, so changing it invalidates the cached vectors of the affected objects.
+
+The OpenAI provider supports endpoint/model/dimensions configuration, batching, timeouts, retries, cancellation, and credentials. An external OpenAI API compatible provider is selected with `embeddings.baseUrl`; the request is posted to `<baseUrl>/embeddings` and omits the `dimensions` field for every model outside the `text-embedding-3` family, because such a server may reject that field. Credentials come from the environment variable named by `embeddings.apiKeyEnv`; an empty name sends the request without an `Authorization` header, and a named but unset variable fails with the `API_KEY_MISSING` error code. A literal `embeddings.apiKey` is accepted as well: prefer `apiKeyEnv`, and keep a literal key only in the git-ignored local file `.local/.structree/config.yaml`, never in a tracked configuration file. A literal key is never written to the fingerprint, to an error message, or to any file. Use `examples/openai.config.json` to select the provider. Object text and queries are sent to that configured endpoint when this provider is selected. The source package contains no API key.
 
 ## Database and table extension API
 
@@ -260,7 +318,7 @@ See [the database guide](docs/database.md) for the supplied-file mapping, API ex
 
 Startup waits for watcher readiness before scanning all registered directories. A debounced watcher and a configurable periodic scan repair later external changes, including missed notifications. A tool mutation commits the filesystem first, updates metadata/FTS immediately when possible, and schedules embedding work. `objects_resync` is the explicit completion barrier when the next semantic query must include recent writes. The generic `FileWatcher`, `WatchLifecycle`, and `reconcileSnapshot` helpers own this scheduling and completeness policy under `src/lib/vault`.
 
-An in-process Effect semaphore and a shared SQLite coordination lock serialize cooperative filesystem writes and metadata snapshots. The coordination file is `objects/.object-mcp-lock.sqlite`; it contains no object data. Lock acquisition retries asynchronously instead of blocking the event loop, and the OS releases a process's lock when that process exits. Model inference occurs outside the filesystem lock and outside search-index transactions.
+An in-process Effect semaphore and a shared SQLite coordination lock serialize cooperative filesystem writes and metadata snapshots. The coordination file is `.object-mcp-lock.sqlite` inside the source root, so with the default layout it is `.local/.structree/objects/.object-mcp-lock.sqlite`; it contains no object data. Lock acquisition retries asynchronously instead of blocking the event loop, and the OS releases a process's lock when that process exits. Model inference occurs outside the filesystem lock and outside search-index transactions.
 
 Before publishing embeddings, reconciliation rereads the source checksum and atomically checks the corresponding metadata checksum. Changed text invalidates old vectors immediately. Model identity, dimensions, prefixes, window policy, and chunk settings participate in the cache fingerprint. Search uses only compatible, current vectors and rechecks returned files, omitting a hit that has changed or disappeared since indexing.
 
@@ -288,8 +346,8 @@ OBJECT_MCP_ONNX_TEST_CONFIG=object-mcp.config.json bun test
 
 `format` applies Biome formatting. `biome:fix` also applies safe lint fixes and organizes imports. The read-only `check` gate runs Biome, strict TypeScript, the ordinary test suite, and the stdio smoke test. Biome is pinned to 2.5.15 in both lockfiles; the shared configuration uses two-space indentation, double quotes, semicolons, LF, and a 100-column width.
 
-The smoke test is a Python 3 script, so `bun run check` needs `python3` on the PATH; `bun run smoke` runs that script on its own. It verifies real stdio pipes, CRUD/search, EOF shutdown, and recovery after killing a coordination-lock holder.
+The smoke test is a Python 3 script, so `bun run check` needs `python3` on the PATH; `bun run smoke` runs that script on its own. It verifies real stdio pipes, CRUD/search, EOF shutdown, and recovery after killing a coordination-lock holder. `bun run smoke:build` builds first, then runs the same suite against `dist/cli.js` in a temporary isolated vault, without touching repository objects or downloading models. `OBJECT_MCP_CLI` overrides the smoke entry point; it defaults to `src/cli.ts`, so ordinary `smoke` and `check` runs remain source-based and do not build.
 
 The ordinary tests use synthetic deterministic embeddings or mocked HTTP and do not download models or make paid API calls. The opt-in ONNX tests require a prepared local model and exercise real CPU inference, cross-language retrieval, and complete-file handling. The shipped CLI's argument, help, status, and exit-code contracts are asserted by `test/cli.test.ts`, which drives the CLI as a subprocess and observes its exit code and JSON output.
 
-The repository contains source and lockfiles rather than a bundled executable. Native SQLite/ONNX dependencies and model assets remain external to the JavaScript module graph.
+The repository tracks source and lockfiles, not generated bundles or standalone native executables. `bun run build` produces the ignored JavaScript bundle described above; package dependencies, native SQLite/ONNX libraries, and any model assets remain external.

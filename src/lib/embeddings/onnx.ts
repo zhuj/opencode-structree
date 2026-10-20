@@ -14,7 +14,65 @@ import {
 import { resolveModelDirectory } from "./model-cache.ts";
 
 export type OnnxEmbeddingConfig = Extract<EmbeddingConfig, { provider: "onnx" }>;
+export type OnnxDevice = OnnxEmbeddingConfig["device"];
 type Window = { owner: number; text: string; weight: number };
+
+/** Options shared by the tokenizer and the model; the execution device selects the ONNX Runtime backend. */
+export interface OnnxRuntimeOptions {
+  readonly revision: string;
+  readonly dtype: OnnxEmbeddingConfig["dtype"];
+  readonly device: OnnxDevice;
+  readonly cache_dir: string;
+  readonly local_files_only: true;
+  readonly session_options: { readonly logSeverityLevel: 3 };
+}
+
+/** Pure options builder so the execution device stays verifiable without loading a model. */
+export function buildOnnxRuntimeOptions(config: OnnxEmbeddingConfig): OnnxRuntimeOptions {
+  return {
+    revision: config.revision,
+    dtype: config.dtype,
+    device: config.device,
+    cache_dir: config.cacheDir,
+    local_files_only: true,
+    session_options: { logSeverityLevel: 3 },
+  };
+}
+
+// Upstream reports a missing CUDA backend through these markers instead of a typed error.
+const DEVICE_FAILURE_MARKERS = [
+  "cuda",
+  "execution provider",
+  "ep_list",
+  "libonnxruntime_providers",
+  "cudart",
+  "cudnn",
+  "cublas",
+];
+
+// A missing or unreadable model file is a model problem, not a device problem.
+const FILESYSTEM_ERROR_CODES = new Set(["ENOENT", "EACCES", "EISDIR", "ENOTDIR", "EPERM"]);
+
+/** True when a creation failure names the execution provider rather than the model content. */
+export function isOnnxDeviceFailure(error: unknown, device: OnnxDevice): boolean {
+  if (device !== "cuda") return false;
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  if (typeof code === "string" && FILESYSTEM_ERROR_CODES.has(code)) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  const cause = error instanceof Error && error.cause instanceof Error ? error.cause.message : "";
+  const haystack = `${message} ${cause}`.toLowerCase();
+  return DEVICE_FAILURE_MARKERS.some((marker) => haystack.includes(marker));
+}
+
+/** Maps an unusable execution provider to a stable, actionable error instead of an opaque upstream failure. */
+export function mapOnnxDeviceFailure(error: unknown, device: OnnxDevice): unknown {
+  if (!isOnnxDeviceFailure(error, device)) return error;
+  return new EmbeddingError(
+    "DEVICE_UNAVAILABLE",
+    'The CUDA execution provider could not be initialized. Install the CUDA 12 runtime libraries required by the installed onnxruntime-node build, or set embeddings.device to "cpu".',
+    { cause: error },
+  );
+}
 
 /** Recursive bisection preserves all source characters without relying on a token/character estimate. */
 export function splitByTokenBudget(
@@ -85,7 +143,7 @@ class OnnxEmbeddingProvider implements EmbeddingProvider {
       documentPrefix: config.documentPrefix,
       pooling: "mean",
       normalize: true,
-      device: "cpu",
+      device: config.device,
     });
   }
 
@@ -108,23 +166,26 @@ class OnnxEmbeddingProvider implements EmbeddingProvider {
       "@huggingface/transformers"
     );
     signal.throwIfAborted();
-    const options = {
-      revision: this.config.revision,
-      dtype: this.config.dtype,
-      device: "cpu" as const,
-      cache_dir: this.config.cacheDir,
-      local_files_only: true,
-      session_options: { logSeverityLevel: 3 as const },
-    };
+    const options = buildOnnxRuntimeOptions(this.config);
     // v4.3.1 metadata preflight omits revision/offline options; an explicit snapshot path preserves both.
     const tokenizer = await AutoTokenizer.from_pretrained(directory, options);
     signal.throwIfAborted();
-    const model = await AutoModel.from_pretrained(directory, options);
-    const extractor = new FeatureExtractionPipeline({
-      task: "feature-extraction",
-      model,
-      tokenizer,
-    });
+    let model: Awaited<ReturnType<typeof AutoModel.from_pretrained>>;
+    try {
+      model = await AutoModel.from_pretrained(directory, options);
+    } catch (error) {
+      throw mapOnnxDeviceFailure(error, this.config.device);
+    }
+    let extractor: FeatureExtractionPipeline;
+    try {
+      extractor = new FeatureExtractionPipeline({
+        task: "feature-extraction",
+        model,
+        tokenizer,
+      });
+    } catch (error) {
+      throw mapOnnxDeviceFailure(error, this.config.device);
+    }
     try {
       await this.verifyLocalModel();
       signal.throwIfAborted();

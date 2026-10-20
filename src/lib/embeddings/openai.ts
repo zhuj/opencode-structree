@@ -26,7 +26,8 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   readonly dimensions: number;
   readonly fingerprint: string;
   private readonly fetcher: EmbeddingFetch;
-  private readonly apiKey: () => string | undefined;
+  private readonly resolveApiKey: () => string | undefined;
+  private readonly requiresApiKey: boolean;
   private readonly lifetime = new AbortController();
   private readonly active = new Set<Promise<unknown>>();
 
@@ -58,15 +59,26 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     if (
       !["https:", "http:"].includes(endpoint.protocol) ||
       endpoint.username ||
-      endpoint.password
+      endpoint.password ||
+      // A query or fragment could carry a key, so it must never reach the endpoint fingerprint.
+      endpoint.search ||
+      endpoint.hash
     ) {
       throw new RangeError(
-        "OpenAI embeddings.baseUrl must be an HTTP(S) URL without embedded credentials",
+        "OpenAI embeddings.baseUrl must be an HTTP(S) URL without embedded credentials, query, or fragment",
       );
     }
     this.dimensions = config.dimensions;
     this.fetcher = dependencies.fetch ?? globalThis.fetch;
-    this.apiKey = dependencies.apiKey ?? (() => process.env[config.apiKeyEnv]);
+    // A literal key wins over the environment variable; neither value enters the fingerprint.
+    const injected = dependencies.apiKey;
+    this.resolveApiKey = () => {
+      if (config.apiKey) return config.apiKey;
+      if (injected) return injected();
+      return process.env[config.apiKeyEnv];
+    };
+    // An empty environment variable name selects a keyless endpoint.
+    this.requiresApiKey = config.apiKeyEnv !== "";
     this.fingerprint = fingerprint({
       version: "object-mcp/openai/utf8-weighted-mean/v1",
       model: config.model,
@@ -100,12 +112,13 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     combined.throwIfAborted();
     assertTexts(texts);
     if (texts.length === 0) return [];
-    const key = this.apiKey();
-    if (!key)
+    const key = this.resolveApiKey();
+    if (!key && this.requiresApiKey) {
       throw new EmbeddingError(
         "API_KEY_MISSING",
         `Set the ${this.config.apiKeyEnv} environment variable for OpenAI embeddings`,
       );
+    }
     const prefix = purpose === "query" ? this.config.queryPrefix : this.config.documentPrefix;
     const budget = this.config.maxInputBytes - Buffer.byteLength(prefix, "utf8");
     if (budget < 4)
@@ -159,7 +172,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
 
   private async request(
     inputs: readonly string[],
-    key: string,
+    key: string | undefined,
     signal: AbortSignal,
   ): Promise<readonly Float32Array[]> {
     const endpoint = `${this.config.baseUrl.replace(/\/+$/, "")}/embeddings`;
@@ -174,16 +187,20 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
       const requestSignal = AbortSignal.any([signal, requestController.signal]);
       let retryDelay: number | undefined;
       try {
+        // A keyless endpoint receives no Authorization header at all.
+        const headers: Record<string, string> = { "content-type": "application/json" };
+        if (key) headers.authorization = `Bearer ${key}`;
         const response = await this.fetcher(endpoint, {
           method: "POST",
-          headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+          headers,
           body: JSON.stringify({
             model: this.config.model,
             input: inputs,
             encoding_format: "float",
-            ...(this.config.model.startsWith("text-embedding-ada-")
-              ? {}
-              : { dimensions: this.dimensions }),
+            // Only the text-embedding-3 family accepts an explicit output dimension.
+            ...(this.config.model.startsWith("text-embedding-3")
+              ? { dimensions: this.dimensions }
+              : {}),
           }),
           signal: requestSignal,
           redirect: "error",

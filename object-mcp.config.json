@@ -1,7 +1,7 @@
 {
-  "root": "./objects",
+  "root": "./.local/.structree/objects",
   "sqlite": {
-    "path": "./.object-mcp/index.sqlite",
+    "path": "./.local/.structree/.cache/index.sqlite",
     "driver": "better-sqlite3",
     "busyTimeoutMs": 5000
   },
@@ -11,7 +11,7 @@
     "revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
     "dimensions": 384,
     "dtype": "q8",
-    "cacheDir": "./.object-mcp/models",
+    "cacheDir": "./.local/.structree/.cache/models",
     "localFilesOnly": true,
     "queryPrefix": "query: ",
     "documentPrefix": "passage: ",

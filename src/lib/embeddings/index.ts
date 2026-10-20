@@ -4,7 +4,15 @@ import { OpenAIEmbeddingProvider } from "./openai.ts";
 
 export type { EmbeddingConfig, EmbeddingProvider } from "../types.ts";
 export { EmbeddingError } from "./common.ts";
-export { createOnnxEmbeddingProvider, type OnnxEmbeddingConfig } from "./onnx.ts";
+export {
+  buildOnnxRuntimeOptions,
+  createOnnxEmbeddingProvider,
+  isOnnxDeviceFailure,
+  mapOnnxDeviceFailure,
+  type OnnxDevice,
+  type OnnxEmbeddingConfig,
+  type OnnxRuntimeOptions,
+} from "./onnx.ts";
 export {
   type OpenAIEmbeddingConfig,
   OpenAIEmbeddingProvider,
