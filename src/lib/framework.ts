@@ -328,11 +328,13 @@ export class ObjectFramework implements ObjectFacade {
         this.store.withProcessLock(async () => {
           const scan = await this.store.scan(undefined, signal);
           const result = reconcileSnapshot(
-            { entries: scan.documents, complete: scan.complete },
+            { entries: scan.documents, complete: scan.complete, invalidated: scan.conflictedKeys },
             {
               key: (document) => document.key,
               upsert: (document) => this.index.upsertDocument(document),
               removeMissing: (keys) => this.index.removeMissing(keys),
+              // A confirmed conflict is evidence of invalidity even when the scan is incomplete.
+              invalidate: (keys) => this.index.removeKeys(keys),
             },
           );
           return { scan, ...result };

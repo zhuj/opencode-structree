@@ -65,6 +65,16 @@ function open(driver: DatabaseConfig["driver"], path = ":memory:"): ItemDatabase
   return database;
 }
 
+/** The raised error, or undefined when the action succeeded. */
+function captureError(action: () => unknown): unknown {
+  try {
+    action();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
 function item(id = "fixed-id", name = "alpha"): Item {
   return {
     id,
@@ -258,6 +268,239 @@ for (const driver of ["better-sqlite3", "bun"] as const) {
         ),
       ).toThrow("CHECK constraints differ");
       expect(database.raw.prepare("SELECT value FROM migration_test").get()).toEqual({ value: 1 });
+    });
+
+    test("migrations refuse a pre-existing UNIQUE constraint with a non-default conflict policy", () => {
+      const database = open(driver);
+      const migrator = new Migrator(database);
+      database.raw.exec(
+        "CREATE TABLE replace_unique (id TEXT NOT NULL PRIMARY KEY, code TEXT NOT NULL UNIQUE ON CONFLICT REPLACE)",
+      );
+      database.raw.exec("INSERT INTO replace_unique(id, code) VALUES ('first', 'shared')");
+      const columns: Column[] = [
+        { name: "id", sqlType: "TEXT", constraints: "NOT NULL" },
+        { name: "code", sqlType: "TEXT", constraints: "NOT NULL UNIQUE" },
+        { name: "note", sqlType: "TEXT" },
+      ];
+      expect(() => migrator.sync("replace_unique", columns)).toThrow(SchemaMigrationError);
+      expect(() => migrator.sync("replace_unique", columns)).toThrow("ON CONFLICT REPLACE");
+      // The refused migration leaves the stored rows and the declared schema unchanged.
+      expect(database.raw.prepare("SELECT id, code FROM replace_unique").all()).toEqual([
+        { id: "first", code: "shared" },
+      ]);
+      expect(
+        database.raw
+          .prepare("PRAGMA table_info(replace_unique)")
+          .all()
+          .map((row) => (row as { name: string }).name),
+      ).toEqual(["id", "code"]);
+      expect(
+        database.raw.prepare("SELECT sql FROM sqlite_schema WHERE name = 'replace_unique'").get(),
+      ).toEqual({
+        sql: "CREATE TABLE replace_unique (id TEXT NOT NULL PRIMARY KEY, code TEXT NOT NULL UNIQUE ON CONFLICT REPLACE)",
+      });
+      // A table constraint carries the same policy, so it is refused as well.
+      database.raw.exec(
+        "CREATE TABLE replace_pair (id TEXT NOT NULL PRIMARY KEY, a TEXT, b TEXT, UNIQUE(a, b) ON CONFLICT REPLACE)",
+      );
+      expect(() =>
+        migrator.sync("replace_pair", [
+          { name: "id", sqlType: "TEXT", constraints: "NOT NULL" },
+          { name: "a", sqlType: "TEXT" },
+          { name: "b", sqlType: "TEXT" },
+        ]),
+      ).toThrow("ON CONFLICT REPLACE");
+    });
+
+    test("migrations refuse a requested UNIQUE constraint with a non-default conflict policy", () => {
+      const database = open(driver);
+      const migrator = new Migrator(database);
+      expect(() =>
+        migrator.sync("requested_replace", [
+          { name: "id", sqlType: "TEXT", constraints: "NOT NULL" },
+          { name: "code", sqlType: "TEXT", constraints: "NOT NULL UNIQUE ON CONFLICT REPLACE" },
+        ]),
+      ).toThrow("ON CONFLICT REPLACE");
+      expect(
+        database.raw
+          .prepare("SELECT name FROM sqlite_schema WHERE name = 'requested_replace'")
+          .get() ?? null,
+      ).toBeNull();
+    });
+
+    test("migrations refuse a UNIQUE conflict policy that a SQL comment hides", () => {
+      const database = open(driver);
+      const migrator = new Migrator(database);
+      const columns: Column[] = [
+        { name: "id", sqlType: "TEXT", constraints: "NOT NULL" },
+        { name: "code", sqlType: "TEXT", constraints: "NOT NULL UNIQUE" },
+      ];
+      database.raw.exec(
+        "CREATE TABLE commented_replace (id TEXT NOT NULL PRIMARY KEY, code TEXT NOT NULL UNIQUE /* policy */ ON CONFLICT REPLACE)",
+      );
+      database.raw.exec("INSERT INTO commented_replace(id, code) VALUES ('first', 'shared')");
+      // The refusal is the safeguard: while it is missing the application keeps writing to a
+      // table whose conflict policy deletes a stored row, so the damage is reproduced first.
+      const refusal = captureError(() => migrator.sync("commented_replace", columns));
+      if (refusal === undefined) {
+        database.raw.exec("INSERT INTO commented_replace(id, code) VALUES ('second', 'shared')");
+      }
+      expect(database.raw.prepare("SELECT id, code FROM commented_replace").all()).toEqual([
+        { id: "first", code: "shared" },
+      ]);
+      expect(refusal).toBeInstanceOf(SchemaMigrationError);
+      expect(String(refusal)).toContain("ON CONFLICT REPLACE");
+      // A comment placed before the policy hides it in the same way.
+      database.raw.exec(
+        "CREATE TABLE commented_replace_before (id TEXT NOT NULL PRIMARY KEY, code TEXT NOT NULL UNIQUE ON /* policy */ CONFLICT REPLACE)",
+      );
+      expect(() => migrator.sync("commented_replace_before", columns)).toThrow(
+        "ON CONFLICT REPLACE",
+      );
+      // A line comment hides it as well, and it ends at the end of its line.
+      database.raw.exec(
+        "CREATE TABLE commented_replace_line (id TEXT NOT NULL PRIMARY KEY, code TEXT NOT NULL UNIQUE -- policy\nON CONFLICT REPLACE)",
+      );
+      expect(() => migrator.sync("commented_replace_line", columns)).toThrow("ON CONFLICT REPLACE");
+      // A table constraint carries the same policy.
+      database.raw.exec(
+        "CREATE TABLE commented_replace_pair (id TEXT NOT NULL PRIMARY KEY, a TEXT, b TEXT, UNIQUE(a, b) /* policy */ ON CONFLICT REPLACE)",
+      );
+      expect(() =>
+        migrator.sync("commented_replace_pair", [
+          { name: "id", sqlType: "TEXT", constraints: "NOT NULL" },
+          { name: "a", sqlType: "TEXT" },
+          { name: "b", sqlType: "TEXT" },
+        ]),
+      ).toThrow("ON CONFLICT REPLACE");
+      // A requested layout with a hidden policy is refused before the table is created.
+      expect(() =>
+        migrator.sync("requested_commented_replace", [
+          { name: "id", sqlType: "TEXT", constraints: "NOT NULL" },
+          {
+            name: "code",
+            sqlType: "TEXT",
+            constraints: "NOT NULL UNIQUE /* policy */ ON CONFLICT REPLACE",
+          },
+        ]),
+      ).toThrow("ON CONFLICT REPLACE");
+      expect(
+        database.raw
+          .prepare("SELECT name FROM sqlite_schema WHERE name = 'requested_commented_replace'")
+          .get() ?? null,
+      ).toBeNull();
+      // A plain UNIQUE keeps the implicit ABORT policy and stays acceptable.
+      database.raw.exec(
+        "CREATE TABLE plain_unique (id TEXT NOT NULL PRIMARY KEY, code TEXT NOT NULL UNIQUE)",
+      );
+      expect(migrator.sync("plain_unique", columns)).toEqual([]);
+    });
+
+    test("SQL comments do not change the compared table shape", () => {
+      const database = open(driver);
+      const migrator = new Migrator(database);
+      database.raw.exec("CREATE TABLE owners (id TEXT NOT NULL PRIMARY KEY)");
+      database.raw.exec(
+        "CREATE TABLE commented_shape (\n" +
+          "  id TEXT NOT NULL PRIMARY KEY, -- the key\n" +
+          "  code TEXT NOT NULL UNIQUE /* the code */,\n" +
+          "  name TEXT NOT NULL COLLATE /* note */ NOCASE,\n" +
+          "  amount INTEGER NOT NULL DEFAULT 1 CHECK (amount >= 0 /* note */),\n" +
+          "  total INTEGER GENERATED ALWAYS AS (amount /* note */ + 1) VIRTUAL,\n" +
+          "  owner TEXT /* note */ REFERENCES owners(id)\n" +
+          ")",
+      );
+      const columns: Column[] = [
+        { name: "id", sqlType: "TEXT", constraints: "NOT NULL" },
+        { name: "code", sqlType: "TEXT", constraints: "NOT NULL UNIQUE" },
+        { name: "name", sqlType: "TEXT", constraints: "NOT NULL COLLATE NOCASE" },
+        {
+          name: "amount",
+          sqlType: "INTEGER",
+          constraints: "NOT NULL DEFAULT 1 CHECK (amount >= 0)",
+        },
+        {
+          name: "total",
+          sqlType: "INTEGER",
+          constraints: "GENERATED ALWAYS AS (amount + 1) VIRTUAL",
+        },
+        { name: "owner", sqlType: "TEXT", constraints: "REFERENCES owners(id)" },
+      ];
+      expect(migrator.sync("commented_shape", columns)).toEqual([]);
+      // A real difference is still refused.
+      expect(() =>
+        migrator.sync(
+          "commented_shape",
+          columns.map((column) =>
+            column.name === "amount"
+              ? { ...column, constraints: "NOT NULL DEFAULT 1 CHECK (amount > 0)" }
+              : column,
+          ),
+        ),
+      ).toThrow("CHECK constraints differ");
+      // A string literal that looks like a comment keeps its content.
+      database.raw.exec(
+        "CREATE TABLE commented_literal (id TEXT NOT NULL PRIMARY KEY, code TEXT NOT NULL DEFAULT 'a /* b */')",
+      );
+      expect(
+        migrator.sync("commented_literal", [
+          { name: "id", sqlType: "TEXT", constraints: "NOT NULL" },
+          { name: "code", sqlType: "TEXT", constraints: "NOT NULL DEFAULT 'a /* b */'" },
+        ]),
+      ).toEqual([]);
+    });
+
+    test("an unterminated SQL comment is refused as a migration error", () => {
+      const database = open(driver);
+      const migrator = new Migrator(database);
+      const refusal = captureError(() =>
+        migrator.sync("unterminated_comment", [
+          { name: "id", sqlType: "TEXT", constraints: "NOT NULL /* unterminated" },
+        ]),
+      );
+      expect(refusal).toBeInstanceOf(SchemaMigrationError);
+      expect(String(refusal)).toContain("unterminated comment");
+      expect(
+        database.raw
+          .prepare("SELECT name FROM sqlite_schema WHERE name = 'unterminated_comment'")
+          .get() ?? null,
+      ).toBeNull();
+    });
+
+    test("migrations accept an identical generated column expression and refuse a changed one", () => {
+      const database = open(driver);
+      const migrator = new Migrator(database);
+      database.raw.exec(
+        "CREATE TABLE generated_values (id TEXT NOT NULL PRIMARY KEY, x INTEGER NOT NULL, y INTEGER GENERATED ALWAYS AS (x + 1) VIRTUAL)",
+      );
+      database.raw.exec("INSERT INTO generated_values(id, x) VALUES ('first', 1)");
+      const base: Column[] = [
+        { name: "id", sqlType: "TEXT", constraints: "NOT NULL" },
+        { name: "x", sqlType: "INTEGER", constraints: "NOT NULL" },
+      ];
+      expect(
+        migrator.sync("generated_values", [
+          ...base,
+          { name: "y", sqlType: "INTEGER", constraints: "GENERATED ALWAYS AS (x + 1) VIRTUAL" },
+        ]),
+      ).toEqual([]);
+      expect(() =>
+        migrator.sync("generated_values", [
+          ...base,
+          { name: "y", sqlType: "INTEGER", constraints: "GENERATED ALWAYS AS (x + 2) VIRTUAL" },
+          { name: "note", sqlType: "TEXT" },
+        ]),
+      ).toThrow("incompatible generation expression");
+      // The refused migration is atomic: the pending column and every stored row survive.
+      expect(
+        database.raw
+          .prepare("PRAGMA table_info(generated_values)")
+          .all()
+          .map((row) => (row as { name: string }).name),
+      ).not.toContain("note");
+      expect(database.raw.prepare("SELECT id, x, y FROM generated_values").all()).toEqual([
+        { id: "first", x: 1, y: 2 },
+      ]);
     });
 
     test("initialization rolls back all registered DDL and closes on failure", () => {

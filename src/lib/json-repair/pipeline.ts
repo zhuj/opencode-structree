@@ -9,7 +9,12 @@ import {
   spend,
 } from "./name-mapper.ts";
 import { inspectInput } from "./property-safety.ts";
-import { jsonSchemaToRepairShape, type RepairShape, resolveRepairShape } from "./schema-adapter.ts";
+import {
+  type JsonPrimitive,
+  jsonSchemaToRepairShape,
+  type RepairShape,
+  resolveRepairShape,
+} from "./schema-adapter.ts";
 import { parseJsonText } from "./syntax.ts";
 import {
   type ParseResult,
@@ -125,22 +130,54 @@ function parseStructure(value: string, path: Path, context: RepairContext): unkn
   }
 }
 
-function numericString(value: string): number | undefined {
+const numericPattern = /^-?(0|[1-9]\d*)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/;
+
+/**
+ * Exact decimal integrality. A textual number is integral when its exact decimal
+ * expansion has no fractional digits, so the digits decide before a double
+ * conversion can round a fractional value onto an integer.
+ */
+function isExactInteger(text: string): boolean {
+  const match = numericPattern.exec(text);
+  if (match === null) return false;
+  const fractionDigits = match[2] ?? "";
+  const digits = `${match[1] ?? "0"}${fractionDigits}`;
+  // A bounded exponent keeps the comparison exact: an out-of-range exponent is
+  // either unrepresentable or far beyond any digit string the parser accepts.
+  const exponent = match[3] === undefined ? 0 : Number(match[3]);
+  const shift = fractionDigits.length - exponent;
+  if (shift <= 0) return true;
+  if (shift > digits.length) return /^0+$/.test(digits);
+  for (let index = digits.length - shift; index < digits.length; index++)
+    if (digits[index] !== "0") return false;
+  return true;
+}
+
+/**
+ * A mathematically integral spelling such as `1.0` or `1e3` stays convertible;
+ * only a fractional decimal form is refused for an integer target.
+ */
+function numericString(value: string, requireExactInteger: boolean): number | undefined {
   const text = value.trim();
-  if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(text)) return undefined;
+  if (!numericPattern.test(text)) return undefined;
+  if (requireExactInteger && !isExactInteger(text)) return undefined;
   const number = Number(text);
   if (!Number.isFinite(number) || (Number.isInteger(number) && !Number.isSafeInteger(number)))
     return undefined;
   return number;
 }
 
+/** An integer literal rejects a fractional spelling exactly like an integer schema. */
+function literalScalarType(literal: JsonPrimitive): string {
+  if (typeof literal !== "number") return typeof literal;
+  return Number.isInteger(literal) ? "integer" : "number";
+}
+
 function scalarCoercion(value: unknown, type: string): unknown {
   if (typeof value !== "string") return value;
   if (type === "number" || type === "integer") {
-    const number = numericString(value);
-    return number !== undefined && (type !== "integer" || Number.isSafeInteger(number))
-      ? number
-      : value;
+    const number = numericString(value, type === "integer");
+    return number !== undefined ? number : value;
   }
   if (type === "boolean") {
     const normalized = value.trim().toLowerCase();
@@ -283,7 +320,7 @@ function normalize(
     const matches = resolved.values.filter((literal) =>
       typeof literal === "string" && typeof value === "string"
         ? normalizeKey(literal) === normalizeKey(value)
-        : Object.is(scalarCoercion(value, typeof literal), literal),
+        : Object.is(scalarCoercion(value, literalScalarType(literal)), literal),
     );
     if (matches.length > 1)
       problem(

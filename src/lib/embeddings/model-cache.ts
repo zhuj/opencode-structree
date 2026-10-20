@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import { mkdir, open, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { EmbeddingError } from "./common.ts";
@@ -155,8 +156,11 @@ async function downloadFile(
     );
   }
   const reader = response.body.getReader();
-  const handle = await open(temporary, "wx", 0o600);
+  let handle: FileHandle | undefined;
+  let ownsTemporary = false;
   try {
+    handle = await open(temporary, "wx", 0o600);
+    ownsTemporary = true;
     let received = 0;
     for (;;) {
       signal.throwIfAborted();
@@ -179,8 +183,10 @@ async function downloadFile(
       );
     await rename(temporary, destination);
   } finally {
+    // The reader is acquired before the temporary file, so the cleanup scope covers both.
     await reader.cancel().catch(() => {});
-    await handle.close().catch(() => {});
-    await rm(temporary, { force: true });
+    if (handle !== undefined) await handle.close().catch(() => {});
+    // Only a temporary file this call created is residue; the original failure must survive.
+    if (ownsTemporary) await rm(temporary, { force: true }).catch(() => {});
   }
 }

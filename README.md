@@ -24,6 +24,8 @@ bun start
 
 `ONNXRUNTIME_NODE_INSTALL=skip` skips the optional ONNX GPU download; the CPU runtime is bundled in the dependency. `prepare-model` explicitly downloads the pinned multilingual E5 q8 model, verifies its file hashes, and runs a synthetic inference check. Normal server operation then uses the local snapshot. `seed-example` creates one example of each entity; existing example IDs are left intact.
 
+`seed-example` writes those twelve examples into the configured source root, which is `objects/` inside this repository for the included configuration. That path is **not** ignored by design: the seeded objects are authoritative source data, and tracking them can be intentional. A `git add .` here therefore offers the twelve example files for tracking. Remove them, or ignore `objects/` yourself, if you want to keep this working tree free of them.
+
 `bun start` communicates MCP on stdin/stdout. Connect it to an MCP client; it is not an interactive shell prompt. Diagnostics go to stderr. A typical client configuration is:
 
 ```json
@@ -282,11 +284,12 @@ bun run format
 bun run biome:fix
 bun run check
 OBJECT_MCP_ONNX_TEST_CONFIG=object-mcp.config.json bun test
-python3 scripts/smoke-stdio.py
 ```
 
-`format` applies Biome formatting. `biome:fix` also applies safe lint fixes and organizes imports. The read-only `check` gate runs Biome, strict TypeScript, and the ordinary test suite. Biome is pinned to 2.5.15 in both lockfiles; the shared configuration uses two-space indentation, double quotes, semicolons, LF, and a 100-column width.
+`format` applies Biome formatting. `biome:fix` also applies safe lint fixes and organizes imports. The read-only `check` gate runs Biome, strict TypeScript, the ordinary test suite, and the stdio smoke test. Biome is pinned to 2.5.15 in both lockfiles; the shared configuration uses two-space indentation, double quotes, semicolons, LF, and a 100-column width.
 
-The ordinary tests use synthetic deterministic embeddings or mocked HTTP and do not download models or make paid API calls. The opt-in ONNX tests require a prepared local model and exercise real CPU inference, cross-language retrieval, and complete-file handling. The Python smoke test verifies real stdio pipes, CRUD/search, EOF shutdown, and recovery after killing a coordination-lock holder.
+The smoke test is a Python 3 script, so `bun run check` needs `python3` on the PATH; `bun run smoke` runs that script on its own. It verifies real stdio pipes, CRUD/search, EOF shutdown, and recovery after killing a coordination-lock holder.
+
+The ordinary tests use synthetic deterministic embeddings or mocked HTTP and do not download models or make paid API calls. The opt-in ONNX tests require a prepared local model and exercise real CPU inference, cross-language retrieval, and complete-file handling. The shipped CLI's argument, help, status, and exit-code contracts are asserted by `test/cli.test.ts`, which drives the CLI as a subprocess and observes its exit code and JSON output.
 
 The repository contains source and lockfiles rather than a bundled executable. Native SQLite/ONNX dependencies and model assets remain external to the JavaScript module graph.

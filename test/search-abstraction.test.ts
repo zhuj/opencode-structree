@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { dateConverter } from "../src/lib/sqlite/column.ts";
 import { Database } from "../src/lib/sqlite/database.ts";
 import { toIndexEmbeddingProvider } from "../src/lib/sqlite/embeddings.ts";
 import { MutationConflictError } from "../src/lib/sqlite/errors.ts";
@@ -92,6 +93,86 @@ function chunks(text: string, ...vectors: number[][]): EmbeddedChunk[] {
     text,
     vector: new Float32Array(vector),
   }));
+}
+
+interface CollidingNote {
+  id: string;
+  title: string;
+  body: string;
+  /** Shares its name with the FTS ranking metadata. */
+  lexical_score: Date;
+  /** Shares its name with the vector ranking metadata. */
+  distance: number;
+  chunk_index: number;
+}
+
+/** A source table whose columns collide with the names of the ranking metadata. */
+class CollidingNotes extends IndexedTable<CollidingNote> {
+  readonly tableName = "colliding_notes";
+
+  constructor(database: Database, options: IndexedTableOptions<CollidingNote> = {}) {
+    super(
+      database,
+      [
+        { name: "title", sqlType: "TEXT", constraints: "NOT NULL" },
+        { name: "body", sqlType: "TEXT", constraints: "NOT NULL" },
+        { name: "lexical_score", sqlType: "TEXT", converter: dateConverter },
+        { name: "distance", sqlType: "INTEGER" },
+        { name: "chunk_index", sqlType: "INTEGER" },
+      ],
+      options,
+    );
+  }
+}
+
+interface VectorDocument {
+  id: string;
+  body: string;
+  checksum: string;
+  embedding_fingerprint: string;
+  embedding_dimensions: number;
+  embedding_checksum: string;
+  distance: number;
+  chunk_index: number;
+}
+
+/** A vector source table whose columns collide with the names of the ranking metadata. */
+class VectorDocuments extends Table<VectorDocument> {
+  readonly tableName = "vector_documents";
+
+  constructor(database: Database) {
+    super(
+      database,
+      [
+        { name: "id", sqlType: "TEXT", constraints: "NOT NULL" },
+        { name: "body", sqlType: "TEXT", constraints: "NOT NULL" },
+        { name: "checksum", sqlType: "TEXT", constraints: "NOT NULL" },
+        { name: "embedding_fingerprint", sqlType: "TEXT" },
+        { name: "embedding_dimensions", sqlType: "INTEGER" },
+        { name: "embedding_checksum", sqlType: "TEXT" },
+        { name: "distance", sqlType: "INTEGER" },
+        { name: "chunk_index", sqlType: "INTEGER" },
+      ],
+      { primaryKey: "id" },
+    );
+  }
+}
+
+interface CaseKeyRow {
+  id: string;
+  value: string;
+}
+
+/** A case-insensitive identity, so several spellings resolve to the same row. */
+class CaseInsensitiveKeys extends IndexedTable<CaseKeyRow> {
+  readonly tableName = "case_keys";
+
+  constructor(database: Database) {
+    super(database, [
+      { name: "id", sqlType: "TEXT", constraints: "PRIMARY KEY COLLATE NOCASE" },
+      { name: "value", sqlType: "TEXT", constraints: "NOT NULL" },
+    ]);
+  }
 }
 
 function provider(
@@ -255,13 +336,13 @@ for (const driver of ["better-sqlite3", "bun"] as const) {
         filter: Filter.eq("m.object_type", "wanted"),
         limit: 2,
       });
-      expect(result.map((row) => row.object_key)).toEqual(["a", "b"]);
+      expect(result.map((match) => match.row.object_key)).toEqual(["a", "b"]);
       expect(result[0]!.chunk_index).toBe(1);
       expect(result[0]!.distance).toBeLessThan(result[1]!.distance);
       expect(
         vectors
           .searchRows(new Float32Array([1, 0]), { fingerprint: "model:b" })
-          .map((row) => row.object_key),
+          .map((match) => match.row.object_key),
       ).toEqual(["otherModel"]);
       expect(
         vectors.searchRows(new Float32Array([1, 0]), {
@@ -437,6 +518,259 @@ for (const driver of ["better-sqlite3", "bun"] as const) {
       expect(notes.read("a")?.body).toBe("orchard");
       expect(notes.searchFTS("orchard")).toHaveLength(1);
       expect(notes.vectorIndex?.storage.readAll()).toHaveLength(2);
+    });
+
+    test("FTS ranking metadata never overwrites a colliding source column", () => {
+      const database = open(driver);
+      const notes = new CollidingNotes(database, {
+        fts: { columns: ["title", "body"], maintenance: "triggers" },
+      });
+      notes.initialize();
+      notes.create({
+        id: "best",
+        title: "orchard",
+        body: "orchard orchard orchard",
+        lexical_score: new Date("2026-02-01T00:00:00.000Z"),
+        distance: 1,
+        chunk_index: 1,
+      });
+      notes.create({
+        id: "worst",
+        title: "orchard",
+        body: "orchard",
+        lexical_score: new Date("2026-01-01T00:00:00.000Z"),
+        distance: 2,
+        chunk_index: 2,
+      });
+      const index = notes.ftsIndex!;
+      // The true BM25 order, measured with an alias that no source column can occupy.
+      const measured = database.raw
+        .prepare(
+          `SELECT m."id" AS "document", bm25("colliding_notes_fts", 0.0, 1.0, 1.0) AS "bm25 score"
+           FROM (SELECT * FROM "colliding_notes" m) m
+           JOIN "colliding_notes_fts" ON m."id" = "colliding_notes_fts"."id"
+           WHERE "colliding_notes_fts" MATCH ? ORDER BY "bm25 score" ASC`,
+        )
+        .all('"orchard"') as { document: string }[];
+      expect(measured.map((row) => row.document)).toEqual(["best", "worst"]);
+      // The colliding source column sorts the other way, so an ordering regression cannot pass.
+      const bySourceColumn = database.raw
+        .prepare(`SELECT "id" FROM "colliding_notes" ORDER BY "lexical_score" ASC`)
+        .all() as { id: string }[];
+      expect(bySourceColumn.map((row) => row.id)).toEqual(["worst", "best"]);
+
+      const results = index.searchRows("orchard");
+      expect(results.map((match) => match.row.id)).toEqual(["best", "worst"]);
+      expect(index.searchRows("orchard", undefined, 1)[0]!.row.id).toBe("best");
+      // The source keeps its own column values; the ranking is reported separately.
+      expect(results[0]!.row.lexical_score).toEqual(new Date("2026-02-01T00:00:00.000Z"));
+      expect(typeof results[0]!.lexical_score).toBe("number");
+      // The ranking keeps the raw BM25 meaning, where smaller values rank first.
+      expect(results[0]!.lexical_score).toBeLessThan(0);
+      expect(results[1]!.lexical_score).toBeGreaterThan(results[0]!.lexical_score);
+      expect(results[0]!.row.distance).toBe(1);
+      expect(results[0]!.row.chunk_index).toBe(1);
+    });
+
+    test("FTS ranking ignores a retained source column named like the internal score alias", () => {
+      const database = open(driver);
+      const notes = new Notes(database, {
+        fts: { columns: ["title", "body"], maintenance: "triggers" },
+      });
+      notes.initialize();
+      notes.create({
+        id: "best",
+        title: "orchard",
+        body: "orchard orchard orchard",
+        category: "one",
+      });
+      notes.create({ id: "worst", title: "orchard", body: "orchard", category: "one" });
+      // A compatible migration retains extra columns, and this one carries the internal alias name.
+      database.raw.exec(`ALTER TABLE "notes" ADD COLUMN "fts lexical score" TEXT`);
+      // The retained column sorts the other way, so an ordering regression cannot pass.
+      database.raw
+        .prepare(`UPDATE "notes" SET "fts lexical score" = ? WHERE id = ?`)
+        .run("Z", "best");
+      database.raw
+        .prepare(`UPDATE "notes" SET "fts lexical score" = ? WHERE id = ?`)
+        .run("A", "worst");
+
+      // The true BM25 order, measured with an alias that no source column can occupy.
+      const measured = database.raw
+        .prepare(
+          `SELECT m."id" AS "document", bm25("notes_fts", 0.0, 1.0, 1.0) AS "bm25 score"
+           FROM (SELECT * FROM "notes" m) m
+           JOIN "notes_fts" ON m."id" = "notes_fts"."id"
+           WHERE "notes_fts" MATCH ? ORDER BY "bm25 score" ASC`,
+        )
+        .all('"orchard"') as { document: string; "bm25 score": number }[];
+      expect(measured.map((row) => row.document)).toEqual(["best", "worst"]);
+
+      const index = notes.ftsIndex!;
+      const results = index.searchRows("orchard");
+      expect(results.map((match) => match.row.id)).toEqual(measured.map((row) => row.document));
+      expect(results.map((match) => match.lexical_score)).toEqual(
+        measured.map((row) => row["bm25 score"]),
+      );
+      expect(index.searchRows("orchard", undefined, 1)[0]!.row.id).toBe(measured[0]!.document);
+    });
+
+    test("FTS initialization refuses a pre-existing index with a different content model", () => {
+      const contentless = open(driver);
+      contentless.raw.exec(
+        `CREATE VIRTUAL TABLE "notes_fts" USING fts5("id" UNINDEXED, "title", "body", tokenize = 'unicode61 remove_diacritics 2', content = '')`,
+      );
+      expect(() =>
+        new Notes(contentless, { fts: { columns: ["title", "body"] } }).initialize(),
+      ).toThrow("migration or rebuild");
+
+      const external = open(driver);
+      external.raw.exec(
+        `CREATE VIRTUAL TABLE "notes_fts" USING fts5("id" UNINDEXED, "title", "body", tokenize = 'unicode61 remove_diacritics 2', content = 'notes')`,
+      );
+      expect(() =>
+        new Notes(external, { fts: { columns: ["title", "body"] } }).initialize(),
+      ).toThrow("migration or rebuild");
+
+      const unindexed = open(driver);
+      unindexed.raw.exec(
+        `CREATE VIRTUAL TABLE "notes_fts" USING fts5("id" UNINDEXED, "title" UNINDEXED, "body", tokenize = 'unicode61 remove_diacritics 2')`,
+      );
+      expect(() =>
+        new Notes(unindexed, { fts: { columns: ["title", "body"] } }).initialize(),
+      ).toThrow("migration or rebuild");
+
+      // An ordinary default index keeps the content in the index itself and stays usable.
+      const ordinary = open(driver);
+      ordinary.raw.exec(
+        `CREATE VIRTUAL TABLE "notes_fts" USING fts5("id" UNINDEXED, "title", "body", tokenize = 'unicode61 remove_diacritics 2')`,
+      );
+      const notes = new Notes(ordinary, {
+        fts: { columns: ["title", "body"], maintenance: "triggers" },
+      });
+      notes.initialize();
+      notes.create({ id: "a", title: "orchard", body: "orchard", category: "one" });
+      expect(notes.searchFTS("orchard").map((row) => row.id)).toEqual(["a"]);
+    });
+
+    test("vector ranking metadata never overwrites a colliding source column", () => {
+      const database = open(driver);
+      const documents = new VectorDocuments(database);
+      documents.initialize();
+      const vectors = new VectorIndex(documents, {
+        sourceKey: "id",
+        freshness: {
+          checksum: "checksum",
+          fingerprint: "embedding_fingerprint",
+          dimensions: "embedding_dimensions",
+          embeddingChecksum: "embedding_checksum",
+        },
+      });
+      vectors.initialize();
+      documents.create({
+        id: "a",
+        body: "orchard",
+        checksum: "sum-a",
+        embedding_fingerprint: "model:a",
+        embedding_dimensions: 2,
+        embedding_checksum: "sum-a",
+        distance: 7,
+        chunk_index: 3,
+      });
+      vectors.replaceSync("a", vectors.prepareChunks(chunks("orchard", [1, 0])), {
+        checksum: "sum-a",
+        fingerprint: "model:a",
+      });
+      const results = vectors.searchRows(new Float32Array([1, 0]), { fingerprint: "model:a" });
+      expect(results).toHaveLength(1);
+      expect(results[0]!.row.distance).toBe(7);
+      expect(results[0]!.row.chunk_index).toBe(3);
+      expect(results[0]!.distance).toBe(0);
+      expect(results[0]!.chunk_index).toBe(0);
+      expect(results[0]!.chunk_text).toBe("orchard");
+    });
+
+    test("direct vector insertion publishes the configured freshness markers", async () => {
+      const database = open(driver);
+      const documents = new VectorDocuments(database);
+      documents.initialize();
+      const vectors = new VectorIndex(documents, {
+        sourceKey: "id",
+        fingerprint: "model:a",
+        extractor: (row) => row.body,
+        embedder: () => Promise.resolve(new Float32Array([1, 0])),
+        freshness: {
+          checksum: "checksum",
+          fingerprint: "embedding_fingerprint",
+          dimensions: "embedding_dimensions",
+          embeddingChecksum: "embedding_checksum",
+        },
+      });
+      vectors.initialize();
+      documents.create({
+        id: "a",
+        body: "orchard",
+        checksum: "sum-a",
+        embedding_fingerprint: "model:a",
+        embedding_dimensions: 2,
+        embedding_checksum: "sum-a",
+      });
+      await vectors.insertRow(documents.readSync("a")!);
+      // The markers are published next to the vectors, so the semantic search finds the row.
+      const hits = vectors.searchRows(new Float32Array([1, 0]));
+      expect(hits.map((match) => match.row.id)).toEqual(["a"]);
+      expect(hits[0]!.distance).toBe(0);
+      const published = documents.readSync("a")!;
+      const stored = vectors.storage.readAll();
+      expect(stored.length).toBeGreaterThan(0);
+      expect(stored.every((row) => row.fingerprint === published.embedding_fingerprint)).toBe(true);
+      expect(stored.every((row) => row.dimensions === published.embedding_dimensions)).toBe(true);
+      expect(published.embedding_checksum).toBe("sum-a");
+      expect(published.checksum).toBe("sum-a");
+    });
+
+    test("revision identity follows the collation of the source key column", async () => {
+      const database = open(driver);
+      const table = new CaseInsensitiveKeys(database);
+      table.initialize();
+      table.create({ id: "A", value: "one" });
+      // Every spelling that resolves to the row shares one revision.
+      expect(table.revisions.read("a")).toBe(table.revisions.read("A"));
+      expect(table.revisions.read("a")).toBeGreaterThan(0);
+      const preparation = await table.prepareUpdate("a", { value: "two" });
+      // A concurrent write to the stored spelling has to invalidate the preparation.
+      table.updateSync("A", { value: "three" });
+      expect(() => preparation.commit()).toThrow(MutationConflictError);
+      expect(table.readSync("A")?.value).toBe("three");
+      // A deletion keeps its tombstone visible to every spelling of the identity.
+      table.deleteSync("A");
+      expect(table.revisions.read("a")).toBeGreaterThan(0);
+      expect(table.readSync("a")).toBeUndefined();
+      // A recreation under another spelling advances the same revision.
+      table.create({ id: "a", value: "four" });
+      expect(table.revisions.read("A")).toBeGreaterThan(0);
+    });
+
+    test("a revision table written with binary comparison migrates to the source collation", () => {
+      const database = open(driver);
+      const table = new CaseInsensitiveKeys(database);
+      table.initialize();
+      table.create({ id: "A", value: "one" });
+      // Stand in for a revision table written by an older version, which compared binary.
+      database.raw.exec(`DROP TABLE "case_keys_mutation_revisions"`);
+      database.raw.exec(
+        `CREATE TABLE "case_keys_mutation_revisions" (id TEXT PRIMARY KEY, revision INTEGER NOT NULL)`,
+      );
+      database.raw
+        .prepare(`INSERT INTO "case_keys_mutation_revisions" (id, revision) VALUES (?, ?)`)
+        .run("A", 3);
+      table.revisions.initialize();
+      // The migration keeps the recorded revision and adopts the source comparison.
+      expect(table.revisions.read("A")).toBe(3);
+      expect(table.revisions.read("a")).toBe(3);
+      // The recreated triggers still advance the migrated revision.
+      table.updateSync("A", { value: "two" });
+      expect(table.revisions.read("a")).toBe(4);
     });
   });
 }

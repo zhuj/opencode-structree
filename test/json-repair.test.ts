@@ -88,6 +88,41 @@ describe("Effect validated relaxed parser", () => {
     }
   });
 
+  test("refuses a fractional numeric spelling instead of rounding it onto an integer", async () => {
+    const schema = Schema.Struct({ count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)) });
+    // A mathematically integral spelling stays convertible, however it is written.
+    for (const [spelling, expected] of [
+      ["0", 0],
+      ["1.0", 1],
+      ["1e3", 1000],
+    ] as const) {
+      const parsed = await parseJson({ count: spelling }, schema);
+      expect(parsed.success).toBe(true);
+      if (!parsed.success) throw new Error(JSON.stringify(parsed.errors));
+      expect(parsed.data.count).toBe(expected);
+    }
+    // A fractional decimal form is never rounded into an integer.
+    for (const spelling of ["1.0000000000000001", "9007199254740990.5", "1e-400", "1.4"]) {
+      const parsed = await parseJson({ count: spelling }, schema);
+      expect(parsed.success).toBe(false);
+      expect(parsed.data).toBeNull();
+      expect(parsed.errors.some((error) => error.code === "SCHEMA_MISMATCH")).toBe(true);
+    }
+  });
+
+  test("an integer literal refuses a fractional spelling that rounds onto it", async () => {
+    const schema = Schema.Struct({ mode: Schema.Literal(3) });
+    for (const spelling of ["3", "3.0"]) {
+      const parsed = await parseJson({ mode: spelling }, schema);
+      expect(parsed.success).toBe(true);
+      if (!parsed.success) throw new Error(JSON.stringify(parsed.errors));
+      expect(parsed.data.mode).toBe(3);
+    }
+    const rounded = await parseJson({ mode: "3.0000000000000001" }, schema);
+    expect(rounded.success).toBe(false);
+    expect(rounded.data).toBeNull();
+  });
+
   test("leaves encoded transforms to Effect rather than coercing their domain type", async () => {
     const schema = Schema.Struct({ value: Schema.NumberFromString, at: Schema.Date });
     const parsed = await parseJson({ Value: "12.5", AT: "2026-10-19T00:00:00Z" }, schema);

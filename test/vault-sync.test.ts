@@ -347,6 +347,50 @@ describe("reusable vault lifecycle", () => {
     expect(calls).toBe(final);
   });
 
+  test("periodic recovery progresses when the debounce is longer than the rescan interval", async () => {
+    let calls = 0;
+    const lifecycle = own(
+      new WatchLifecycle(async () => ++calls, { debounceMs: 100, rescanIntervalMs: 10 }),
+    );
+    expect(await lifecycle.start()).toBe(1);
+    await eventually(() => calls >= 3);
+    await eventually(() => !lifecycle.dirty);
+    await lifecycle.shutdown();
+    const final = calls;
+    await delay(30);
+    expect(calls).toBe(final);
+  });
+
+  test("periodic recovery never overlaps passes and still follows a change made during a pass", async () => {
+    let calls = 0;
+    let active = 0;
+    let peak = 0;
+    let lifecycle!: WatchLifecycle<number>;
+    lifecycle = own(
+      new WatchLifecycle(
+        async () => {
+          const current = ++calls;
+          peak = Math.max(peak, ++active);
+          try {
+            if (current === 1) lifecycle.requestResync();
+            await delay(5);
+            return current;
+          } finally {
+            active--;
+          }
+        },
+        { debounceMs: 100, rescanIntervalMs: 10 },
+      ),
+    );
+    expect(await lifecycle.start()).toBe(2);
+    // Wait until a pass driven by the periodic timer has actually run, so the
+    // overlap assertion below covers a periodic pass and not only the startup
+    // pass and its follow-up.
+    await eventually(() => calls >= 3);
+    expect(peak).toBe(1);
+    await lifecycle.shutdown();
+  });
+
   test("a watcher close failure is returned only after active reconciliation has drained", async () => {
     const entered = deferred<void>();
     const finish = deferred<void>();
@@ -449,6 +493,39 @@ describe("complete snapshot reconciliation", () => {
     });
     expect(rows.has("unseen")).toBe(false);
     expect(removalCalls).toBe(1);
+  });
+
+  test("an incomplete snapshot invalidates a confirmed conflict without removing unseen rows", () => {
+    const rows = new Map([
+      ["conflicted", "checksum"],
+      ["unseen", "retained"],
+    ]);
+    const target = {
+      key: (entry: { key: string }) => entry.key,
+      upsert: (entry: { key: string; checksum: string }) => {
+        rows.set(entry.key, entry.checksum);
+        return true;
+      },
+      removeMissing: () => {
+        throw new Error("An incomplete snapshot must not remove missing rows.");
+      },
+      invalidate: (keys: Iterable<string>) => {
+        let removed = 0;
+        for (const key of keys) if (rows.delete(key)) removed++;
+        return removed;
+      },
+    };
+    const result = reconcileSnapshot(
+      {
+        entries: [{ key: "observed", checksum: "new" }],
+        complete: false,
+        invalidated: ["conflicted"],
+      },
+      target,
+    );
+    expect(result).toEqual({ indexed: 1, unchanged: 0, deleted: 1 });
+    expect(rows.has("conflicted")).toBe(false);
+    expect(rows.get("unseen")).toBe("retained");
   });
 
   test("duplicate snapshot identities fail before any cache mutation or removal", () => {

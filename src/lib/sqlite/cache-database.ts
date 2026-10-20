@@ -272,8 +272,11 @@ export class CacheDatabase extends Database {
       );
     }
     if (applicationId === 0) {
+      // The reserved prefix is literal, so an escaped underscore keeps "sqliteXnotes" a user table.
       const existing = this.raw
-        .prepare("SELECT name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' LIMIT 1")
+        .prepare(
+          "SELECT name FROM sqlite_schema WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\' LIMIT 1",
+        )
         .get();
       if (existing !== undefined && existing !== null) {
         throw new Error(

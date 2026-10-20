@@ -1,11 +1,15 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createMcpHandler } from "@modelcontextprotocol/server";
-import { createFramework, type ObjectFramework } from "../src/framework.ts";
+import { Schema } from "effect";
+import { createFramework, type FrameworkEvent, type ObjectFramework } from "../src/framework.ts";
+import { BaseObjectSchema } from "../src/lib/base-schema.ts";
+import { FrameworkError } from "../src/lib/errors.ts";
+import type { FileStore } from "../src/lib/filesystem.ts";
 import { createMcpServer } from "../src/lib/mcp.ts";
 import type { EmbeddingProvider, StoredObject } from "../src/lib/types.ts";
 import { coreDefinitions, ObjectRegistry } from "../src/registry.ts";
@@ -30,6 +34,33 @@ const project = (id = "p-1", title = "Local architecture") => ({
   tags: { priority: "high" },
   metadata: {},
   relations: { partOf: null },
+});
+
+const adr = (id = "a-1", title = "Recorded decision") => ({
+  id,
+  name: id,
+  title,
+  description: "Architecture decision record",
+  createdAt: new Date("2026-10-15T12:00:00.000Z"),
+  updatedAt: new Date("2026-10-15T12:00:00.000Z"),
+  retiredAt: null,
+  tags: {},
+  metadata: {},
+  relations: { commitment: { scenarios: [] }, partOf: null, dependsOn: [] },
+});
+
+/** A JSON-shaped object whose reading is decoded from a string, like a frontmatter value. */
+const measure = (id = "m-1", reading = "1") => ({
+  id,
+  name: id,
+  title: "Measured value",
+  description: "A measurement",
+  createdAt: "2026-10-15T12:00:00.000Z",
+  updatedAt: "2026-10-15T12:00:00.000Z",
+  retiredAt: null,
+  tags: {},
+  metadata: {},
+  reading,
 });
 
 class TestEmbeddingProvider implements EmbeddingProvider {
@@ -303,6 +334,212 @@ describe("filesystem-authoritative framework", () => {
     const report = await framework.resync();
     expect(report.issues.some((issue) => issue.code === "SYMLINK")).toBe(true);
     expect(await readFile(path.join(directory, "outside.md"), "utf8")).toBe("outside");
+  });
+
+  test("a confirmed duplicate leaves search while an unrelated unseen object survives an incomplete scan", async () => {
+    const { framework, root } = await fixture();
+    const conflicted = await framework.create(
+      "project",
+      project("conflicted"),
+      "Conflicted content",
+    );
+    const unseen = await framework.create(
+      "adr",
+      adr("a-unseen", "Unseen decision"),
+      "Unseen content",
+    );
+    await framework.resync();
+    expect(framework.status().objects).toBe(2);
+    await writeFile(
+      path.join(root, "projects", "duplicate.md"),
+      await readFile(path.join(root, conflicted.path), "utf8"),
+    );
+    const resources = framework as unknown as { readonly store: FileStore };
+    const walk = resources.store.files.walk.bind(resources.store.files);
+    const unavailable = spyOn(resources.store.files, "walk").mockImplementation(
+      async (directory, signal) => {
+        const result = await walk(directory, signal);
+        if (directory?.startsWith("adrs") !== true) return result;
+        return {
+          ...result,
+          files: result.files.filter((file) => file.path !== unseen.path),
+          complete: false,
+          issues: [
+            ...result.issues,
+            { path: unseen.path, code: "DIRECTORY", message: "A subtree was unavailable" },
+          ],
+        };
+      },
+    );
+    try {
+      const report = await framework.resync();
+      expect(report.issues.filter((issue) => issue.code === "DUPLICATE_ID")).toHaveLength(2);
+      expect(report.issues.some((issue) => issue.code === "DIRECTORY")).toBe(true);
+      // Only the confirmed conflict is dropped; the unseen cached row is left alone.
+      expect(report.deleted).toBe(1);
+      expect((await framework.search({ query: "Conflicted", mode: "fulltext" })).hits).toHaveLength(
+        0,
+      );
+      expect((await framework.search({ query: "Unseen", mode: "fulltext" })).hits).toHaveLength(1);
+      expect(framework.status().objects).toBe(1);
+    } finally {
+      unavailable.mockRestore();
+    }
+    // Once the duplicate is repaired and discovery is complete again, the
+    // conflicted object must return to the index.
+    await rm(path.join(root, "projects", "duplicate.md"));
+    const repaired = await framework.resync();
+    expect(repaired.issues.filter((issue) => issue.code === "DUPLICATE_ID")).toHaveLength(0);
+    expect((await framework.search({ query: "Conflicted", mode: "fulltext" })).hits).toHaveLength(
+      1,
+    );
+    expect(framework.status().objects).toBe(2);
+  });
+
+  test("an empty type selector is rejected instead of selecting every registered type", async () => {
+    const { framework } = await fixture();
+    await framework.create("project", project());
+    await expect(framework.list("")).rejects.toMatchObject({ code: "UNKNOWN_TYPE" });
+    await expect(framework.list("does_not_exist")).rejects.toMatchObject({ code: "UNKNOWN_TYPE" });
+    expect((await framework.list("project")).total).toBe(1);
+  });
+
+  test("list and search enforce their documented boundaries", async () => {
+    const { framework } = await fixture();
+    await framework.create("project", project());
+    await expect(framework.list("project", { limit: 0 })).rejects.toMatchObject({
+      code: "VALIDATION",
+    });
+    await expect(framework.list("project", { limit: 1001 })).rejects.toMatchObject({
+      code: "VALIDATION",
+    });
+    await expect(framework.list("project", { offset: -1 })).rejects.toMatchObject({
+      code: "VALIDATION",
+    });
+    expect((await framework.list("project", { limit: 1 })).objects).toHaveLength(1);
+    expect((await framework.list("project", { limit: 1000 })).total).toBe(1);
+    expect((await framework.list("project", { offset: 0 })).total).toBe(1);
+    const maxTopN = framework.config.search.maxTopN;
+    await expect(framework.search({ query: "architecture", topN: 0 })).rejects.toMatchObject({
+      code: "VALIDATION",
+    });
+    await expect(
+      framework.search({ query: "architecture", topN: maxTopN + 1 }),
+    ).rejects.toMatchObject({ code: "VALIDATION" });
+    expect((await framework.search({ query: "architecture", topN: maxTopN })).hits).toHaveLength(1);
+  });
+
+  test("onEvent reports every documented event kind and unsubscription stops delivery", async () => {
+    const { framework, root } = await fixture({ watch: true });
+    const events: FrameworkEvent[] = [];
+    const unsubscribe = framework.onEvent((event) => events.push(event));
+    const created = await framework.create("project", project(), "Body");
+    expect(events).toContainEqual({
+      kind: "object_created",
+      source: "tool",
+      type: "project",
+      id: "p-1",
+    });
+    const raw = await readFile(path.join(root, created.path), "utf8");
+    await writeFile(path.join(root, created.path), raw.replace("Body", "Edited body"));
+    await eventually(() => events.some((event) => event.kind === "source_changed"));
+    const changed = events.find((event) => event.kind === "source_changed");
+    expect(changed).toMatchObject({ kind: "source_changed", source: "filesystem" });
+    if (changed?.kind !== "source_changed") throw new Error("Expected a source change event.");
+    expect(changed.path).toBe(created.path);
+    const current = await framework.get("project", "p-1");
+    const updated = await framework.update(
+      "project",
+      "p-1",
+      project("p-1", "Updated"),
+      "Updated body",
+      current.checksum,
+    );
+    expect(events).toContainEqual({
+      kind: "object_updated",
+      source: "tool",
+      type: "project",
+      id: "p-1",
+    });
+    await framework.delete("project", "p-1", updated.checksum);
+    expect(events).toContainEqual({
+      kind: "object_deleted",
+      source: "tool",
+      type: "project",
+      id: "p-1",
+    });
+    await framework.resync();
+    const completed = events.find((event) => event.kind === "sync_completed");
+    expect(completed).toMatchObject({ kind: "sync_completed", source: "filesystem" });
+    if (completed?.kind !== "sync_completed") throw new Error("Expected a sync report.");
+    expect(completed.report.scanned).toBeGreaterThan(0);
+    unsubscribe();
+    const delivered = events.length;
+    await framework.resync();
+    expect(events.length).toBe(delivered);
+  });
+
+  test("requestResync drives a recovery pass without an explicit resync", async () => {
+    const { framework, root } = await fixture();
+    const events: FrameworkEvent[] = [];
+    framework.onEvent((event) => events.push(event));
+    await framework.create("project", project(), "Body");
+    await eventually(
+      () => events.some((event) => event.kind === "sync_completed") && !framework.status().syncing,
+    );
+    events.length = 0;
+    await writeFile(
+      path.join(root, "projects", "recovered.md"),
+      [
+        "---",
+        "id: recovered",
+        "name: recovered",
+        "title: Recovered project",
+        "description: Recovered description",
+        "createdAt: 2026-10-15T12:00:00.000Z",
+        "updatedAt: 2026-10-15T12:00:00.000Z",
+        "retiredAt: null",
+        "tags: {}",
+        "metadata: {}",
+        "relations:",
+        "  partOf: null",
+        "---",
+        "Recovered body",
+        "",
+      ].join("\n"),
+    );
+    framework.requestResync();
+    await eventually(() => events.some((event) => event.kind === "sync_completed"));
+    expect(framework.status().objects).toBe(2);
+  });
+
+  test("a non-finite decoded number is rejected before it can reach the vault file", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "object-mcp-framework-"));
+    tempDirs.push(directory);
+    const registry = new ObjectRegistry(coreDefinitions).register({
+      name: "measure",
+      directory: "measures",
+      description: "A type whose reading is decoded from a string.",
+      schema: Schema.Struct({ ...BaseObjectSchema.fields, reading: Schema.NumberFromString }),
+    });
+    const framework = await createFramework({
+      registry,
+      baseDirectory: directory,
+      config: {
+        root: "objects",
+        sqlite: { path: "cache/index.sqlite" },
+        embeddings: { provider: "disabled" },
+        sync: { watch: false, debounceMs: 20, rescanIntervalMs: 0 },
+      },
+    });
+    open.push(framework);
+    const failure = await framework
+      .create("measure", measure("m-1", "abc"), "Body")
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(FrameworkError);
+    if (!(failure instanceof FrameworkError)) throw new Error("Expected a framework error.");
+    expect(failure.message).toContain("reading");
+    expect(await readdir(path.join(directory, "objects", "measures"))).toEqual([]);
   });
 
   test("MCP creates a real file, returns ISO dates, searches it and closes cleanly", async () => {

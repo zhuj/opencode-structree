@@ -16,6 +16,11 @@ export interface ScanResult {
   readonly issues: readonly SyncIssue[];
   readonly complete: boolean;
   readonly scanned: number;
+  /**
+   * Keys whose identity a scan positively identified as conflicting. A confirmed
+   * conflict is evidence of invalidity, unlike an object that was merely not observed.
+   */
+  readonly conflictedKeys: readonly string[];
 }
 
 /** Applies object identity rules to schema-independent vault documents. */
@@ -91,7 +96,8 @@ export class FileStore {
   }
 
   async scan(type?: string, signal?: AbortSignal): Promise<ScanResult> {
-    const definitions = type ? [this.registry.get(type)] : this.registry.definitions;
+    // Only an omitted selector means every registered type; an unknown name is an error.
+    const definitions = type === undefined ? this.registry.definitions : [this.registry.get(type)];
     const documents: SourceDocument[] = [];
     const issues: SyncIssue[] = [];
     let complete = true;
@@ -111,17 +117,21 @@ export class FileStore {
       byKey.set(document.key, found);
     }
     const unique: SourceDocument[] = [];
+    const conflictedKeys: string[] = [];
     for (const group of byKey.values()) {
       if (group.length === 1) unique.push(...group);
-      else
+      else {
+        const conflicted = group[0];
+        if (conflicted) conflictedKeys.push(conflicted.key);
         for (const document of group)
           issues.push({
             path: document.path,
             code: "DUPLICATE_ID",
             message: `Multiple ${document.type} files have id ${JSON.stringify(document.object.id)}. All conflicting copies are excluded from indexing.`,
           });
+      }
     }
-    return { documents: unique, issues, complete, scanned };
+    return { documents: unique, issues, complete, scanned, conflictedKeys };
   }
 
   async get(type: string, id: string, signal?: AbortSignal): Promise<SourceDocument> {
@@ -134,11 +144,7 @@ export class FileStore {
       );
     const found = scan.documents.find((document) => document.object.id === id);
     if (!found) {
-      if (
-        scan.issues.some(
-          (issue) => issue.code === "DUPLICATE_ID" && issue.message.includes(JSON.stringify(id)),
-        )
-      ) {
+      if (scan.conflictedKeys.includes(objectKey(type, id))) {
         throw new FrameworkError(
           "DUPLICATE_ID",
           `Multiple ${type} files use id ${JSON.stringify(id)}.`,

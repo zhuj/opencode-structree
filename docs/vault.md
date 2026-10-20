@@ -220,6 +220,12 @@ boundary. In this framework FileStore excludes invalid and duplicate objects,
 and reconciliation applies valid metadata under its source coordination lock.
 A partial directory enumeration cannot establish absence for unseen objects.
 
+A confirmed conflict and an unobserved object are different cases. When the
+scan positively identifies a duplicate identity, that key is invalidated
+immediately and its derived rows are removed, even if another directory was
+enumerated only partially. An object that was merely not observed keeps its
+cached row until a complete scan establishes that it is gone.
+
 Embedding inference remains outside filesystem locks and search transactions.
 Before vectors are published, the framework rereads the source checksum and
 checks the indexed source revision. A changed source schedules another pass.

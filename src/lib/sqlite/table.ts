@@ -240,6 +240,15 @@ export abstract class Table<Row extends object> {
   }
 
   updateSync(key: TableKey, updates: Partial<Row>): void {
+    this.updateSourceSync(key, updates);
+  }
+
+  /**
+   * Writes source columns only. Derived tables override {@link updateSync} to keep their
+   * indexes in step, so index-owned markers are published through this path: a marker
+   * write must not invalidate the index rows that produced it.
+   */
+  updateSourceSync(key: TableKey, updates: Partial<Row>): void {
     this.assertInitialized();
     const serialized = this.serialize(updates) ?? {};
     const keyValues = this.keyValues(key);

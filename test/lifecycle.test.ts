@@ -5,6 +5,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import Database from "better-sqlite3";
 import { createFramework, type ObjectFramework } from "../src/framework.ts";
+import { FrameworkError } from "../src/lib/errors.ts";
 import type { FileStore } from "../src/lib/filesystem.ts";
 import type { SqliteIndex } from "../src/lib/sqlite/index.ts";
 import type { EmbeddingProvider, SyncReport } from "../src/lib/types.ts";
@@ -158,12 +159,17 @@ describe("independent instances and lifecycle", () => {
     try {
       coordinator.exec("BEGIN IMMEDIATE");
       const controller = new AbortController();
+      const reason = new DOMException("Cancelled while queued", "AbortError");
       const pending = framework
         .create("project", project("cancelled-writer"), "Must not be written", controller.signal)
         .catch((error: unknown) => error);
       await delay(20);
-      controller.abort(new DOMException("Cancelled while queued", "AbortError"));
-      expect(await pending).toBeInstanceOf(Error);
+      controller.abort(reason);
+      const failure = await pending;
+      expect(failure).toBeInstanceOf(FrameworkError);
+      if (!(failure instanceof FrameworkError)) throw new Error("Expected a framework error.");
+      expect(failure.cause).toBe(reason);
+      expect(failure.message).toBe("Cancelled while queued");
       expect((await framework.list("project")).total).toBe(0);
       coordinator.exec("ROLLBACK");
       const created = await framework.create("project", project("later-writer"), "Committed");
@@ -179,11 +185,12 @@ describe("independent instances and lifecycle", () => {
     const { framework } = await fixture({ provider });
     await framework.create("project", project("shared-indexing"), "Index me");
     const controller = new AbortController();
+    const reason = new DOMException("Cancelled one waiter", "AbortError");
     const first = framework.resync(controller.signal).catch((error: unknown) => error);
     const second = framework.resync();
     await provider.entered.promise;
-    controller.abort(new DOMException("Cancelled one waiter", "AbortError"));
-    expect(await first).toBeInstanceOf(Error);
+    controller.abort(reason);
+    expect(await first).toBe(reason);
     expect(provider.active).toBe(1);
     expect(provider.closeCalls).toBe(0);
     provider.release.resolve();

@@ -57,12 +57,14 @@ These examples describe argument objects within a valid MCP request. A stringifi
 | Missing wrappers | A missing object container may be reconstructed from declared fields. A scalar can become a one-element array when an array is required. A scalar can fill an object wrapper only when that object has one declared field. |
 | Stringified containers | Strings that look like JSON can be decoded where an object or array is required. Ordinary string fields are left as strings. |
 | Syntax | The guarded syntax layer supports such mistakes as unquoted keys, single-quoted strings, trailing commas, comments, complete Markdown code fences, and certain missing delimiters or outer braces. A repair must preserve the supplied scalar tokens. |
-| Numbers | Numeric strings can become finite numbers. Integer schemas require safe integers; fractional values are never rounded. Incomplete numbers, unsafe integer conversions, and strings such as `"01"` are not converted. |
+| Numbers | Numeric strings can become finite numbers, using the value JSON parsing would produce. Integer schemas and integer literals require safe integers whose exact decimal form is integral, so a fractional spelling is never rounded onto an integer; a mathematically integral spelling such as `"1.0"` or `"1e3"` is still accepted. Incomplete numbers, unsafe integer conversions, and strings such as `"01"` are not converted. |
 | Booleans | Strings spelling `true` or `false`, allowing case and surrounding whitespace, can become booleans. `yes`, `no`, `1`, and `0` are not boolean synonyms. |
 | Literal strings/enums | Case and conventional separator normalization can select one declared literal. The parser does not use edit-distance guessing to change enum values. |
 | Delimited arrays | Opt-in only. With `splitArrays: true`, comma, semicolon, or newline delimiters split a string into array elements and trim each element. There is no CSV quoting language. |
 
 By default, a string such as `"a,b"` supplied for a string array becomes `["a,b"]` when wrapper inference is enabled. It becomes `["a", "b"]` only if delimiter splitting is explicitly enabled. Keep splitting disabled when delimiters may belong to identifiers.
+
+Integer targets decide integrality from the exact decimal spelling, not from the converted double. `"1.0"` and `"1e3"` are mathematically integral and stay acceptable, while `"1.0000000000000001"`, `"9007199254740990.5"`, and `"1e-400"` are fractional and are not converted. A number target still converts exactly as JSON parsing would.
 
 Key matching confidence is a heuristic score, not a probability of the model's intent. `minConfidence` and `maxKeyDistance` control edit-distance matching; exact, case, and separator matches remain available when `fuzzyKeys` is false. Set `enabled: false` to require canonical arguments throughout.
 

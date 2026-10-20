@@ -161,6 +161,25 @@ for (const driver of ["better-sqlite3", "bun"] as const) {
       ).toEqual([{ name: "notes" }]);
     });
 
+    test("refuses to claim a database whose table name only resembles the reserved prefix", () => {
+      const sqlite = config(driver);
+      const unrelated = openDatabase(sqlite);
+      connections.push(unrelated);
+      // SQLite reserves the literal "sqlite_" prefix, so this is a user table and not an internal one.
+      unrelated.exec("CREATE TABLE sqliteXnotes(id TEXT PRIMARY KEY, body TEXT NOT NULL)");
+      unrelated.prepare("INSERT INTO sqliteXnotes VALUES (?, ?)").run("keep", "user-owned notes");
+
+      expect(() => new SqliteIndex(sqlite, defaultConfig.search)).toThrow("unclaimed database");
+      expect(unrelated.prepare("SELECT * FROM sqliteXnotes").all()).toEqual([
+        { id: "keep", body: "user-owned notes" },
+      ]);
+      expect(unrelated.prepare("PRAGMA application_id").get()).toEqual({ application_id: 0 });
+      expect(unrelated.prepare("PRAGMA user_version").get()).toEqual({ user_version: 0 });
+      expect(
+        unrelated.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all(),
+      ).toEqual([{ name: "sqliteXnotes" }]);
+    });
+
     test("refuses a cache from an unsupported version without dropping fields", () => {
       const sqlite = config(driver);
       const old = openDatabase(sqlite);

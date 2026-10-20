@@ -52,6 +52,17 @@ afterEach(async () => {
   );
 });
 
+/** Asserts the exact failure reason: a schema error that names the offending field. */
+async function expectSchemaFailure(operation: Promise<unknown>, field: string): Promise<void> {
+  const failure = await operation.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  expect(Schema.isSchemaError(failure)).toBe(true);
+  if (!Schema.isSchemaError(failure)) throw new Error("Expected a schema error.");
+  expect(failure.message).toContain(field);
+}
+
 describe("generic Markdown vault", () => {
   test("round-trips an injected Effect header and exact Markdown body", async () => {
     const { vault, root } = await setup();
@@ -71,9 +82,9 @@ describe("generic Markdown vault", () => {
 
   test("strict header validation rejects missing and excess fields without creating a file", async () => {
     const { vault, files } = await setup();
-    await expect(vault.create("bad.md", { ...input(), extra: "unexpected" })).rejects.toBeDefined();
+    await expectSchemaFailure(vault.create("bad.md", { ...input(), extra: "unexpected" }), "extra");
     const { retiredAt: _retiredAt, ...missing } = input();
-    await expect(vault.create("bad.md", missing)).rejects.toBeDefined();
+    await expectSchemaFailure(vault.create("bad.md", missing), "retiredAt");
     expect(await files.hash("bad.md")).toBeNull();
   });
 

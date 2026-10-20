@@ -625,11 +625,13 @@ describe("official MCP adapter", () => {
     }
     const decoded = await schema["~standard"].validate({ date: "2026-10-18T00:00:00Z" });
     expect("value" in decoded && decoded.value.date instanceof Date).toBe(true);
-    expect(
-      (await schema["~standard"].validate({ date: "2026-10-18Z", extra: true })).issues,
-    ).toBeDefined();
-    expect(
-      (await schema["~standard"].validate({ date: "2026-10-18Z", label: null })).issues,
-    ).toBeDefined();
+    const excess = await schema["~standard"].validate({ date: "2026-10-18Z", extra: true });
+    expect(excess.issues).toBeDefined();
+    expect(excess.issues?.length ?? 0).toBeGreaterThan(0);
+    expect(excess.issues?.[0]?.path).toEqual(["extra"]);
+    const invalid = await schema["~standard"].validate({ date: "2026-10-18Z", label: null });
+    expect(invalid.issues).toBeDefined();
+    expect(invalid.issues?.length ?? 0).toBeGreaterThan(0);
+    expect(invalid.issues?.[0]?.path).toEqual(["label"]);
   });
 });

@@ -180,6 +180,107 @@ revisions and direct-column FTS triggers, but application code performing raw
 writes must maintain any manually extracted FTS/vector indexes. Revision guards
 protect prepared work; they do not run an embedding model from a SQL trigger.
 
+## Search result shapes
+
+`FTSIndex` and `VectorIndex` keep the source row and the ranking metadata in
+separate namespaces. A search result is an object whose `row` property holds
+the materialized source row; the ranking and chunk metadata are siblings of
+that property, never fields merged into the row. A source column may legally
+be named `lexical_score`, `distance`, `chunk_index`, `start_offset`,
+`end_offset`, or `chunk_text`, and the ranking neither overwrites nor
+shadows it.
+
+| Call | Result element |
+| --- | --- |
+| `FTSIndex.searchRows(query, filter?, limit?)` | `{ row: Row; lexical_score: number }` |
+| `FTSIndex.search(query, filter?, limit?)` | `{ id: string; rank: number }` |
+| `VectorIndex.searchRows(vector, options?)` | `{ row: Row; distance: number; chunk_index: number; start_offset: number; end_offset: number; chunk_text: string }` |
+| `VectorIndex.searchIdByEmbedding(vector, filter?, limit?)` | `{ row: { id: string }; distance: number }` |
+
+`FTSResult.rank` is the same raw BM25 score that `FTSRow.lexical_score`
+reports, and `VectorSearchResult.distance` is the same cosine distance that
+`VectorSearchRow.distance` reports. A BM25 score is a raw value in which
+smaller numbers rank first; it is not an ordinal rank. A vector distance is
+the cosine distance clamped to the range 0 to 2, so smaller is closer.
+
+```ts
+import type { FTSRow, VectorSearchRow } from "@local/object-mcp/sqlite";
+
+// Note stands for the source row type of the indexed table.
+const lexical: FTSRow<Note>[] = ftsIndex.searchRows("orchard", undefined, 10);
+for (const match of lexical) {
+  match.row.title; // the source row keeps its own columns
+  match.lexical_score; // raw BM25 score; smaller ranks first
+}
+
+const semantic: VectorSearchRow<Note>[] = vectorIndex.searchRows(queryVector, { limit: 5 });
+for (const match of semantic) {
+  match.row.title; // the source row keeps its own columns
+  match.distance; // cosine distance; smaller is closer
+  match.chunk_index; // index of the matching chunk
+  match.start_offset; // chunk start offset in the source text
+  match.end_offset; // chunk end offset in the source text
+  match.chunk_text; // the matched chunk text
+}
+```
+
+### Upgrading from the flat result shape
+
+The earlier flat shape is gone. It merged the source row and the ranking
+metadata into a single object:
+
+```ts
+// before
+type FTSRow<Row extends object> = Row & { readonly lexical_score: number };
+type VectorSearchRow<Row extends object> = Row & {
+  readonly distance: number;
+  readonly chunk_index: number;
+  readonly start_offset: number;
+  readonly end_offset: number;
+  readonly chunk_text: string;
+};
+```
+
+That shape spread the source row's own columns across the same object as the
+ranking, so a source column named like a ranking field could be overwritten
+by it, and the ranking could be shadowed by it. After upgrading, read the
+source row from `match.row` and the metadata from its siblings.
+
+### Write metadata and the effective fingerprint
+
+`VectorIndex.metadataForRow(row)` returns the `VectorWriteMetadata` that
+`insertRow` and the prepared mutations publish with a write:
+`{ checksum, fingerprint }`. The checksum is the SHA-256 of the extracted
+text when no `freshness` columns are configured, and otherwise the source
+row's `freshness.checksum` value.
+
+Two fingerprints are involved, and they are not interchangeable:
+
+- The **provider fingerprint** is the upstream model identifier:
+  `EmbeddingProvider.fingerprint`, or the `fingerprint` option of
+  `VectorIndexOptions` when it overrides the provider.
+- The **effective fingerprint** is the value `VectorIndex` actually stores and
+  filters on. It is a SHA-256 over the version marker
+  `object-mcp/indexed-table-embeddings/v1`, the provider fingerprint, the
+  embedding dimensions, and the chunk options, so a different model,
+  dimension, or chunking yields a different effective fingerprint.
+
+The effective fingerprint is written to the `fingerprint` column of the
+vector rows, is returned by `metadataForRow`, is published to the configured
+`freshness.fingerprint` source column, and is the value that
+`VectorIndex.searchRows` matches with `v.fingerprint = ?`. A search uses
+that same effective fingerprint when `VectorSearchOptions.fingerprint` is
+omitted. Pass the option only to search rows written with exactly that
+value: a provider fingerprint on its own does not match the rows written
+through the ordinary path, because those rows carry the effective
+fingerprint.
+
+```ts
+const metadata = vectorIndex.metadataForRow(row);
+metadata.checksum; // freshness checksum written with the vectors
+metadata.fingerprint; // effective fingerprint: stored and filtered on
+```
+
 ## Migration and compatibility
 
 The cache retains schema version **2** and its existing object/chunk identities.
@@ -188,6 +289,14 @@ discarding metadata or embeddings. Startup FTS repair covers missing, duplicate,
 and orphan identities. A changed FTS layout or tokenizer requires an explicit
 rebuild; initialization reports incompatible configuration instead of silently
 using an old layout.
+
+The FTS compatibility check compares the declared columns, the tokenizer, and the
+content model. A pre-existing index that stores its content in another table
+(`content='other'`), stores no content of its own (`content=''`), or has had an
+indexed field changed to `UNINDEXED` is a different layout, so initialization
+refuses it and requires an explicit rebuild. Without that check the index would
+appear to initialize successfully and then fail at query time, or return empty
+results, depending on the variant.
 
 `Migrator.sync` creates a missing table and can add compatible nullable/defaulted
 columns. It refuses incompatible primary keys, types, nullability, defaults,

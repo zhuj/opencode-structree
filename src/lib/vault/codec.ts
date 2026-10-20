@@ -1,4 +1,4 @@
-import { parseDocument, stringify } from "yaml";
+import { LineCounter, parseDocument, stringify, type YAMLParseError } from "yaml";
 import { FrameworkError } from "../errors.ts";
 import { checksum } from "./checksums.ts";
 import { assertUtf8Text } from "./utf8.ts";
@@ -19,6 +19,14 @@ export interface VaultElement<Header> {
   readonly raw: string;
   readonly checksum: string;
   readonly json: Readonly<Record<string, unknown>>;
+}
+
+/** Keeps the position and the reason of a YAML failure without quoting the source. */
+function describeYamlError(error: YAMLParseError, lineCounter: LineCounter): string {
+  const offset = error.pos[0];
+  if (offset < 0) return error.message;
+  const { line, col } = lineCounter.linePos(offset);
+  return `${error.message} at line ${line}, column ${col}`;
 }
 
 export class MarkdownCodec<Header> {
@@ -50,9 +58,21 @@ export class MarkdownCodec<Header> {
         "FRONTMATTER",
         "Every vault document requires a YAML frontmatter block delimited by ---.",
       );
-    const document = parseDocument(frontmatter, { version: "1.2", uniqueKeys: true, merge: false });
+    // Pretty errors would quote the offending source lines, so only the position and
+    // the reason are reported; a user-authored value never reaches a diagnostic.
+    const lineCounter = new LineCounter();
+    const document = parseDocument(frontmatter, {
+      version: "1.2",
+      uniqueKeys: true,
+      merge: false,
+      prettyErrors: false,
+      lineCounter,
+    });
     if (document.errors.length)
-      throw new FrameworkError("YAML", document.errors.map((error) => error.message).join("; "));
+      throw new FrameworkError(
+        "YAML",
+        document.errors.map((error) => describeYamlError(error, lineCounter)).join("; "),
+      );
     let json: unknown;
     try {
       json = document.toJS({ maxAliasCount: this.maxAliasCount });

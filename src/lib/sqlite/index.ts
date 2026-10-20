@@ -31,16 +31,19 @@ export interface IndexedMetadata {
   readonly embeddingChunks: number;
 }
 
-interface LexicalRow extends MetadataRow {
-  lexical_score: number;
+/** The source row and the ranking metadata occupy separate namespaces. */
+interface LexicalMatch {
+  readonly row: MetadataRow;
+  readonly lexical_score: number;
 }
 
-interface SemanticRow extends MetadataRow {
-  distance: number;
-  chunk_index: number;
-  start_offset: number;
-  end_offset: number;
-  chunk_text: string;
+interface SemanticMatch {
+  readonly row: MetadataRow;
+  readonly distance: number;
+  readonly chunk_index: number;
+  readonly start_offset: number;
+  readonly end_offset: number;
+  readonly chunk_text: string;
 }
 
 export interface IndexStatus {
@@ -270,30 +273,31 @@ export class SqliteIndex {
         {
           row: MetadataRow;
           lexical?: { rank: number; score: number };
-          semantic?: { rank: number; row: SemanticRow };
+          semantic?: { rank: number; match: SemanticMatch };
         }
       >();
-      lexical.forEach((row, index) => {
-        combined.set(row.object_key, {
-          row,
-          lexical: { rank: index + 1, score: row.lexical_score },
+      lexical.forEach((match, index) => {
+        combined.set(match.row.object_key, {
+          row: match.row,
+          lexical: { rank: index + 1, score: match.lexical_score },
         });
       });
-      semantic.forEach((row, index) => {
-        const entry = combined.get(row.object_key) ?? { row };
-        entry.semantic = { rank: index + 1, row };
-        combined.set(row.object_key, entry);
+      semantic.forEach((match, index) => {
+        const entry = combined.get(match.row.object_key) ?? { row: match.row };
+        entry.semantic = { rank: index + 1, match };
+        combined.set(match.row.object_key, entry);
       });
       const hits = Array.from(combined.values(), (entry): SearchHit => {
-        const semanticRow = entry.semantic?.row;
+        const semanticMatch = entry.semantic?.match;
         const labels = exactLabels(entry.row);
         let score: number;
         if (mode === "fulltext") {
           if (entry.lexical === undefined) throw new Error("A full-text hit has no lexical rank.");
           score = -entry.lexical.score;
         } else if (mode === "semantic") {
-          if (semanticRow === undefined) throw new Error("A semantic hit has no vector distance.");
-          score = 1 - semanticRow.distance;
+          if (semanticMatch === undefined)
+            throw new Error("A semantic hit has no vector distance.");
+          score = 1 - semanticMatch.distance;
         } else {
           score =
             (entry.lexical === undefined
@@ -310,8 +314,8 @@ export class SqliteIndex {
           checksum: entry.row.checksum,
           score,
           fulltextRank: entry.lexical?.rank ?? null,
-          semanticDistance: semanticRow?.distance ?? null,
-          matchedChunk: semanticRow === undefined ? null : this.matchExcerpt(semanticRow),
+          semanticDistance: semanticMatch?.distance ?? null,
+          matchedChunk: semanticMatch === undefined ? null : this.matchExcerpt(semanticMatch),
           ...(request.includeBody === true ? { body: entry.row.body } : {}),
         };
       });
@@ -360,7 +364,7 @@ export class SqliteIndex {
     this.closed = true;
   }
 
-  private lexical(request: SearchRequest, limit: number): LexicalRow[] {
+  private lexical(request: SearchRequest, limit: number): LexicalMatch[] {
     const index = this.database.objects.ftsIndex;
     if (index === undefined) throw new Error("The object full-text index is not configured.");
     return index.searchRows(request.query, typeFilter(request.types), limit);
@@ -371,7 +375,7 @@ export class SqliteIndex {
     vector: Float32Array,
     fingerprint: string,
     limit: number,
-  ): SemanticRow[] {
+  ): SemanticMatch[] {
     return this.database.vectors.searchRows(vector, {
       filter: typeFilter(request.types),
       fingerprint,
@@ -379,7 +383,7 @@ export class SqliteIndex {
     });
   }
 
-  private matchExcerpt(row: SemanticRow): NonNullable<SearchHit["matchedChunk"]> {
+  private matchExcerpt(row: SemanticMatch): NonNullable<SearchHit["matchedChunk"]> {
     const characters = Array.from(row.chunk_text).slice(0, this.searchConfig.maxMatchCharacters);
     return {
       index: row.chunk_index,

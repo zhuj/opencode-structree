@@ -22,7 +22,22 @@ export interface FTSResult {
   readonly rank: number;
 }
 
-export type FTSRow<Row extends object> = Row & { readonly lexical_score: number };
+/**
+ * The source row and the ranking metadata occupy separate namespaces. A source column may
+ * legally be named like a ranking field, so the ranking is never merged into the source row.
+ */
+export interface FTSRow<Row extends object> {
+  readonly row: Row;
+  /** Raw BM25 score, where smaller values rank first; this is not an ordinal rank. */
+  readonly lexical_score: number;
+}
+
+/**
+ * The ranking is projected under an alias containing a space. Declared source columns are plain
+ * SQL identifiers, so no declared column can occupy this alias, and the projection names the
+ * declared columns explicitly, which keeps a retained extra column out of the result set.
+ */
+const SCORE_KEY = "fts lexical score";
 
 /** FTS stores the original text. Only MATCH expressions receive literal-query escaping. */
 export class FTSIndex<Row extends object> {
@@ -96,19 +111,16 @@ export class FTSIndex<Row extends object> {
         if (existing != null) {
           const columns = raw.prepare(`PRAGMA table_info(${name})`).all() as { name: string }[];
           const expected = [this.indexKey, ...this.options.columns];
-          const configuredTokenizer =
-            existing.sql
-              .match(/tokenize\s*=\s*(['"])(.*?)\1/i)?.[2]
-              ?.replace(/\s+/g, " ")
-              .trim() ?? "unicode61";
+          const layout = fts5Layout(existing.sql);
           if (
-            !/\bUSING\s+fts5\s*\(/i.test(existing.sql) ||
+            layout === undefined ||
             columns.length !== expected.length ||
             columns.some((column, index) => column.name !== expected[index]) ||
-            configuredTokenizer !== tokenizer
+            fts5Tokenizer(layout.options) !== tokenizer ||
+            !isDefaultContentModel(layout, expected.length)
           ) {
             throw new Error(
-              `FTS index ${this.tableName} differs from its configured columns or tokenizer; an explicit index migration or rebuild is required.`,
+              `FTS index ${this.tableName} differs from its configured columns, tokenizer, or content model; an explicit index migration or rebuild is required.`,
             );
           }
         }
@@ -205,23 +217,28 @@ export class FTSIndex<Row extends object> {
       .map((column) => `m.${quoteIdentifier(column)} ASC`)
       .join(", ");
     // The subquery keeps unqualified filters in the source-table namespace, including its key.
+    // The projection names the declared columns, so a retained extra column cannot join the
+    // result set and shadow the score that the order is computed from.
+    const projection = this.table.columnNames
+      .map((column) => `m.${quoteIdentifier(column)}`)
+      .join(", ");
     const rows = this.table.db.raw
-      .prepare(`SELECT m.*, bm25(${name}, 0.0, ${weights.join(", ")}) AS lexical_score
+      .prepare(`SELECT ${projection}, bm25(${name}, 0.0, ${weights.join(", ")}) AS "${SCORE_KEY}"
       FROM (SELECT * FROM ${quoteIdentifier(this.table.tableName)} m ${where}) m
       JOIN ${name} ON m.${quoteIdentifier(this.sourceKey)} = ${name}.${quoteIdentifier(this.indexKey)}
-      WHERE ${name} MATCH ? ORDER BY lexical_score ASC, ${order} LIMIT ?`)
+      WHERE ${name} MATCH ? ORDER BY "${SCORE_KEY}" ASC, ${order} LIMIT ?`)
       .all(...values, expression, limit) as Record<string, unknown>[];
     return rows.map((rawRow) => {
       const row = this.table.materialize(rawRow);
       if (row === undefined) throw new Error("A matched FTS source row could not be materialized.");
-      return { ...row, lexical_score: Number(rawRow.lexical_score) };
+      return { row, lexical_score: Number(rawRow[SCORE_KEY]) };
     });
   }
 
   search(query: string, filter?: WhereFilter, limit = 10): FTSResult[] {
-    return this.searchRows(query, filter, limit).map((row) => ({
-      id: this.rowKey(row),
-      rank: row.lexical_score,
+    return this.searchRows(query, filter, limit).map((match) => ({
+      id: this.rowKey(match.row),
+      rank: match.lexical_score,
     }));
   }
 
@@ -273,4 +290,174 @@ export function escapeFTSQuery(query: string): string {
 export function validateLimit(limit: number): void {
   if (!Number.isSafeInteger(limit) || limit < 1)
     throw new RangeError("Search limit must be a positive integer.");
+}
+
+/** The layout an FTS5 table declares: its columns, their indexing, and its options. */
+interface FtsLayout {
+  readonly columns: readonly FtsColumn[];
+  readonly options: ReadonlyMap<string, string>;
+}
+
+interface FtsColumn {
+  readonly name: string;
+  readonly unindexed: boolean;
+}
+
+/**
+ * The default content model keeps the indexed text in the FTS table itself, indexes every
+ * indexed field, and configures nothing beyond the tokenizer. A contentless table, a table with
+ * externally stored content, and an unindexed indexed field all need an explicit rebuild.
+ */
+function isDefaultContentModel(layout: FtsLayout, columnCount: number): boolean {
+  if (layout.columns.length !== columnCount) return false;
+  // The identity column may be indexed or unindexed; every indexed field has to be indexed.
+  if (layout.columns.slice(1).some((column) => column.unindexed)) return false;
+  return [...layout.options.keys()].every((option) => option === "tokenize");
+}
+
+/** The layout declared by a CREATE VIRTUAL TABLE statement, or undefined when it is unreadable. */
+function fts5Layout(sql: string): FtsLayout | undefined {
+  const arguments_ = fts5Arguments(sql);
+  if (arguments_ === undefined) return undefined;
+  const columns: FtsColumn[] = [];
+  const options = new Map<string, string>();
+  for (const argument of arguments_) {
+    const trimmed = argument.trim();
+    if (trimmed === "") continue;
+    const separator = fts5OptionSeparator(trimmed);
+    if (separator !== undefined) {
+      options.set(
+        trimmed.slice(0, separator).trim().toLowerCase(),
+        trimmed.slice(separator + 1).trim(),
+      );
+      continue;
+    }
+    const column = fts5Column(trimmed);
+    if (column === undefined) return undefined;
+    columns.push(column);
+  }
+  return { columns, options };
+}
+
+/** The fts5 arguments of a CREATE VIRTUAL TABLE statement, or undefined when they are unreadable. */
+function fts5Arguments(sql: string): string[] | undefined {
+  const using = /\bUSING\s+fts5\s*\(/i.exec(sql);
+  if (using === null) return undefined;
+  const arguments_: string[] = [];
+  let current = "";
+  let depth = 0;
+  let quote: string | undefined;
+  for (let index = using.index + using[0].length; index < sql.length; index += 1) {
+    const character = sql.charAt(index);
+    if (quote !== undefined) {
+      current += character;
+      if (character === quote) {
+        if (sql.charAt(index + 1) === quote) {
+          current += sql.charAt(index + 1);
+          index += 1;
+          continue;
+        }
+        quote = undefined;
+      }
+      continue;
+    }
+    if (character === "'" || character === '"' || character === "`") {
+      quote = character;
+      current += character;
+      continue;
+    }
+    if (character === "(") {
+      depth += 1;
+      current += character;
+      continue;
+    }
+    if (character === ")") {
+      if (depth === 0) {
+        arguments_.push(current);
+        return arguments_;
+      }
+      depth -= 1;
+      current += character;
+      continue;
+    }
+    if (character === "," && depth === 0) {
+      arguments_.push(current);
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  return undefined;
+}
+
+/** The position of the "=" that separates an FTS5 option from its value. */
+function fts5OptionSeparator(argument: string): number | undefined {
+  let quote: string | undefined;
+  for (let index = 0; index < argument.length; index += 1) {
+    const character = argument.charAt(index);
+    if (quote !== undefined) {
+      if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === "'" || character === '"' || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === "=") {
+      const name = argument.slice(0, index).trim();
+      return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? index : undefined;
+    }
+  }
+  return undefined;
+}
+
+/** A column of an FTS5 table, with the indexing that its declaration requests. */
+function fts5Column(argument: string): FtsColumn | undefined {
+  const quote = argument.charAt(0);
+  if (quote === '"' || quote === "'" || quote === "`") {
+    let name = "";
+    let index = 1;
+    while (index < argument.length) {
+      const character = argument.charAt(index);
+      if (character === quote) {
+        if (argument.charAt(index + 1) === quote) {
+          name += quote;
+          index += 2;
+          continue;
+        }
+        index += 1;
+        break;
+      }
+      name += character;
+      index += 1;
+    }
+    return { name, unindexed: fts5Modifiers(argument.slice(index)).includes("UNINDEXED") };
+  }
+  const parts = argument.split(/\s+/).filter((part) => part !== "");
+  const name = parts[0];
+  if (name === undefined) return undefined;
+  return { name, unindexed: fts5Modifiers(parts.slice(1).join(" ")).includes("UNINDEXED") };
+}
+
+/** The modifiers of an FTS5 column declaration. */
+function fts5Modifiers(modifiers: string): string[] {
+  return modifiers
+    .split(/\s+/)
+    .filter((modifier) => modifier !== "")
+    .map((modifier) => modifier.toUpperCase());
+}
+
+/** The tokenizer in effect, where an absent option means the SQLite default. */
+function fts5Tokenizer(options: ReadonlyMap<string, string>): string {
+  const value = options.get("tokenize");
+  if (value === undefined) return "unicode61";
+  return unquote(value).replace(/\s+/g, " ").trim();
+}
+
+/** The text of a quoted option value. */
+function unquote(value: string): string {
+  const quote = value.charAt(0);
+  if ((quote === "'" || quote === '"') && value.length > 1 && value.endsWith(quote))
+    return value.slice(1, -1).replaceAll(`${quote}${quote}`, quote);
+  return value;
 }

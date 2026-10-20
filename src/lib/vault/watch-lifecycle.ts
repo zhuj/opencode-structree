@@ -99,10 +99,24 @@ export class WatchLifecycle<Report> {
     const report = await this.resync();
     this.ensureOpen();
     if (this.rescanIntervalMs > 0) {
-      this.periodic = setInterval(() => this.requestResync(), this.rescanIntervalMs);
+      this.periodic = setInterval(() => this.requestPeriodicResync(), this.rescanIntervalMs);
       this.periodic.unref();
     }
     return report;
+  }
+
+  /**
+   * Periodic recovery must not wait for the event debounce: a debounce longer than the
+   * rescan interval would otherwise reset the pending timer on every tick forever.
+   */
+  private requestPeriodicResync(): void {
+    if (this.stopped) return;
+    this.changed = true;
+    // A running pass observes the change itself and repeats while it stays dirty.
+    if (!this.started || this.running) return;
+    void this.resync().catch((error: unknown) => {
+      if (!this.stopped) this.reportError(error);
+    });
   }
 
   requestResync(): void {

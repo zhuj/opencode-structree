@@ -61,13 +61,30 @@ export interface VectorSearchResult<Row extends object> {
   readonly distance: number;
 }
 
-export type VectorSearchRow<Row extends object> = Row & {
+/**
+ * The source row and the ranking metadata occupy separate namespaces. A source column may
+ * legally be named like a ranking field, so the ranking is never merged into the source row.
+ */
+export interface VectorSearchRow<Row extends object> {
+  readonly row: Row;
   readonly distance: number;
   readonly chunk_index: number;
   readonly start_offset: number;
   readonly end_offset: number;
   readonly chunk_text: string;
-};
+}
+
+/**
+ * Ranking metadata is projected under aliases containing a space. Source column names are
+ * plain SQL identifiers, so no source column can occupy these aliases and shadow the ranking.
+ */
+const RANKING_KEYS = {
+  distance: "vec distance",
+  chunk_index: "vec chunk index",
+  start_offset: "vec start offset",
+  end_offset: "vec end offset",
+  chunk_text: "vec chunk text",
+} as const;
 
 export interface PreparedVectorChunk {
   readonly chunk: EmbeddedChunk;
@@ -267,9 +284,34 @@ export class VectorIndex<Row extends object> {
       .prepare(snapshot, () => {
         signal?.throwIfAborted();
         this.replaceSync(id, prepared, metadata);
+        this.publishFreshness(id, prepared, metadata);
         this.revisions.touch(id);
       })
       .commit();
+  }
+
+  /**
+   * Publishes the configured freshness markers next to the vectors they describe. The markers
+   * are written through the source-only update path, because the ordinary source update hook
+   * would delete the very vectors this insertion just wrote.
+   */
+  publishFreshness(
+    id: string,
+    prepared: readonly PreparedVectorChunk[],
+    metadata: VectorWriteMetadata,
+  ): void {
+    const freshness = this.options.freshness;
+    if (freshness === undefined) return;
+    const first = prepared[0];
+    if (first === undefined)
+      throw new Error("Prepared vectors must include the whole-file embedding.");
+    const patch: Record<string, unknown> = {};
+    if (freshness.fingerprint !== undefined) patch[freshness.fingerprint] = metadata.fingerprint;
+    if (freshness.dimensions !== undefined) patch[freshness.dimensions] = first.chunk.vector.length;
+    if (freshness.embeddingChecksum !== undefined)
+      patch[freshness.embeddingChecksum] = metadata.checksum;
+    if (Object.keys(patch).length === 0) return;
+    this.table.updateSourceSync(id, patch as Partial<Row>);
   }
 
   /** Metadata freshness publication belongs to the enclosing source-table transaction. */
@@ -353,7 +395,9 @@ export class VectorIndex<Row extends object> {
       ), ranked AS (
         SELECT *, ROW_NUMBER() OVER (PARTITION BY object_key ORDER BY distance ASC, chunk_index ASC) AS document_rank FROM eligible
       )
-      SELECT m.*, r.distance, r.chunk_index, r.start_offset, r.end_offset, r.chunk_text
+      SELECT m.*, r.distance AS "${RANKING_KEYS.distance}", r.chunk_index AS "${RANKING_KEYS.chunk_index}",
+        r.start_offset AS "${RANKING_KEYS.start_offset}", r.end_offset AS "${RANKING_KEYS.end_offset}",
+        r.chunk_text AS "${RANKING_KEYS.chunk_text}"
       FROM ranked r JOIN ${source} m ON m.${sourceKey} = r.object_key
       WHERE r.document_rank = 1 ORDER BY r.distance ASC, ${order} LIMIT ?`)
       .all(vectorBytes(vector), ...values, fingerprint, vector.length, limit) as Record<
@@ -365,12 +409,12 @@ export class VectorIndex<Row extends object> {
       if (row === undefined)
         throw new Error("A matched vector source row could not be materialized.");
       return {
-        ...row,
-        distance: Number(rawRow.distance),
-        chunk_index: Number(rawRow.chunk_index),
-        start_offset: Number(rawRow.start_offset),
-        end_offset: Number(rawRow.end_offset),
-        chunk_text: String(rawRow.chunk_text),
+        row,
+        distance: Number(rawRow[RANKING_KEYS.distance]),
+        chunk_index: Number(rawRow[RANKING_KEYS.chunk_index]),
+        start_offset: Number(rawRow[RANKING_KEYS.start_offset]),
+        end_offset: Number(rawRow[RANKING_KEYS.end_offset]),
+        chunk_text: String(rawRow[RANKING_KEYS.chunk_text]),
       };
     });
   }
@@ -381,7 +425,7 @@ export class VectorIndex<Row extends object> {
     limit = 5,
   ): VectorSearchResult<{ id: string }>[] {
     return this.searchRows(embedding, { ...(filter === undefined ? {} : { filter }), limit }).map(
-      (row) => ({ row: { id: this.rowKey(row) }, distance: row.distance }),
+      (match) => ({ row: { id: this.rowKey(match.row) }, distance: match.distance }),
     );
   }
 

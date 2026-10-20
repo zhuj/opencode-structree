@@ -26,12 +26,10 @@ export class MutationRevisions {
   }
 
   initialize(): void {
+    this.ensureRevisionTable();
     const revisions = quoteIdentifier(this.name);
     const table = quoteIdentifier(this.table);
     const key = quoteIdentifier(this.keyColumn);
-    this.db.raw.exec(
-      `CREATE TABLE IF NOT EXISTS ${revisions} (id TEXT PRIMARY KEY, revision INTEGER NOT NULL)`,
-    );
     for (const operation of ["INSERT", "UPDATE", "DELETE"] as const) {
       const reference = operation === "DELETE" ? "OLD" : "NEW";
       this.db.raw.exec(`CREATE TRIGGER IF NOT EXISTS ${quoteIdentifier(`${this.name}_${operation}`)}
@@ -46,6 +44,61 @@ export class MutationRevisions {
         INSERT INTO ${revisions} (id, revision) VALUES (OLD.${key}, 1)
         ON CONFLICT(id) DO UPDATE SET revision = revision + 1;
       END`);
+  }
+
+  /**
+   * Revision identity has to match source identity: a key column declared COLLATE NOCASE
+   * resolves several spellings to one row, and every spelling must share one revision.
+   * The revision table therefore uses the source key column's collation.
+   */
+  private ensureRevisionTable(): void {
+    const collation = this.sourceCollation();
+    const revisions = quoteIdentifier(this.name);
+    const existing = this.db.raw
+      .prepare(`SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?`)
+      .get(this.name) as { sql: string | null } | undefined;
+    if (existing == null) {
+      this.db.raw.exec(
+        `CREATE TABLE ${revisions} (id TEXT COLLATE ${collation} PRIMARY KEY, revision INTEGER NOT NULL)`,
+      );
+      return;
+    }
+    if (columnCollation(existing.sql ?? undefined, "id") === collation) return;
+    this.migrateRevisionTable(collation);
+  }
+
+  /** Rebuilds the revision table with the source collation, keeping the highest revision per identity. */
+  private migrateRevisionTable(collation: string): void {
+    const revisions = quoteIdentifier(this.name);
+    const migrated = quoteIdentifier(`${this.name}_migrated`);
+    this.db.raw
+      .transaction(() => {
+        // The triggers are recreated after the table has been replaced.
+        this.dropTriggers();
+        this.db.raw.exec(
+          `CREATE TABLE ${migrated} (id TEXT COLLATE ${collation} PRIMARY KEY, revision INTEGER NOT NULL)`,
+        );
+        // OR REPLACE keeps the last inserted row, so the highest revision per identity wins.
+        this.db.raw.exec(
+          `INSERT OR REPLACE INTO ${migrated} (id, revision) SELECT id, revision FROM ${revisions} ORDER BY revision ASC`,
+        );
+        this.db.raw.exec(`DROP TABLE ${revisions}`);
+        this.db.raw.exec(`ALTER TABLE ${migrated} RENAME TO ${quoteIdentifier(this.name)}`);
+      })
+      .immediate();
+  }
+
+  private dropTriggers(): void {
+    for (const suffix of ["INSERT", "UPDATE", "DELETE", "MOVE"]) {
+      this.db.raw.exec(`DROP TRIGGER IF EXISTS ${quoteIdentifier(`${this.name}_${suffix}`)}`);
+    }
+  }
+
+  private sourceCollation(): string {
+    const row = this.db.raw
+      .prepare(`SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?`)
+      .get(this.table) as { sql: string | null } | undefined;
+    return columnCollation(row?.sql ?? undefined, this.keyColumn);
   }
 
   read(id: string): number {
@@ -125,4 +178,71 @@ function rejectThenable(value: unknown): void {
     void Promise.resolve(value).catch(() => undefined);
     throw new TypeError("Mutation commit callbacks must not return a promise.");
   }
+}
+
+const TABLE_CONSTRAINT_KEYWORDS = new Set(["CONSTRAINT", "PRIMARY", "FOREIGN", "UNIQUE", "CHECK"]);
+
+/** Reads the COLLATE a column declares, defaulting to SQLite's BINARY comparison. */
+function columnCollation(sql: string | undefined, column: string): string {
+  if (sql === undefined) return "BINARY";
+  for (const entry of tableColumnDefinitions(sql)) {
+    const name = entry[0];
+    if (name === undefined) continue;
+    const identifier = unquoteIdentifier(name).toUpperCase();
+    if (TABLE_CONSTRAINT_KEYWORDS.has(identifier)) continue;
+    if (identifier !== column.toUpperCase()) continue;
+    let depth = 0;
+    for (let index = 1; index < entry.length; index++) {
+      const token = entry[index];
+      if (token === "(") depth++;
+      else if (token === ")") depth--;
+      else if (depth === 0 && token === "COLLATE") {
+        const collation = unquoteIdentifier(entry[index + 1] ?? "").toUpperCase();
+        return /^[A-Z_][A-Z0-9_]*$/.test(collation) ? collation : "BINARY";
+      }
+    }
+    return "BINARY";
+  }
+  return "BINARY";
+}
+
+/** Splits the column list of a CREATE TABLE statement into its top-level definitions. */
+function tableColumnDefinitions(sql: string): string[][] {
+  const tokens = sqlTokens(sql);
+  const open = tokens.indexOf("(");
+  if (open < 0) return [];
+  const definitions: string[][] = [];
+  let depth = 0;
+  let start = open + 1;
+  for (let index = open; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token === "(") depth++;
+    else if (token === ")") {
+      depth--;
+      if (depth === 0) {
+        definitions.push(tokens.slice(start, index));
+        break;
+      }
+    } else if (token === "," && depth === 1) {
+      definitions.push(tokens.slice(start, index));
+      start = index + 1;
+    }
+  }
+  return definitions;
+}
+
+/** Mirrors the migrator's statement inspection so both read a schema the same way. */
+function sqlTokens(sql: string): string[] {
+  return (
+    sql.match(
+      /'(?:''|[^'])*'|"(?:""|[^"])*"|`(?:``|[^`])*`|\[[^\]]*\]|[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|<>|!=|<=|>=|[^\s]/g,
+    ) ?? []
+  ).map((token) => (/^[A-Za-z_]/.test(token) ? token.toUpperCase() : token));
+}
+
+function unquoteIdentifier(value: string): string {
+  if (value.startsWith('"')) return value.slice(1, -1).replaceAll('""', '"');
+  if (value.startsWith("`")) return value.slice(1, -1).replaceAll("``", "`");
+  if (value.startsWith("[")) return value.slice(1, -1);
+  return value;
 }

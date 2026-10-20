@@ -23,7 +23,8 @@
     "lint:fix": "biome lint --write .",
     "biome:check": "biome check . --error-on-warnings",
     "biome:fix": "biome check --write .",
-    "check": "bun run biome:check && bun run typecheck && bun test",
+    "smoke": "python3 scripts/smoke-stdio.py",
+    "check": "bun run biome:check && bun run typecheck && bun test && bun run smoke",
     "prepare-model": "bun scripts/prepare-model.ts --config object-mcp.config.json",
     "seed-example": "bun scripts/seed-example.ts --config object-mcp.config.json"
   },

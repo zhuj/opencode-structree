@@ -1,10 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { loadConfig } from "../src/lib/config.ts";
-import { normalizeVector, splitUtf8, weightedMean } from "../src/lib/embeddings/common.ts";
+import {
+  EmbeddingError,
+  normalizeVector,
+  splitUtf8,
+  weightedMean,
+} from "../src/lib/embeddings/common.ts";
 import { createEmbeddingProvider } from "../src/lib/embeddings/index.ts";
+import { resolveModelDirectory } from "../src/lib/embeddings/model-cache.ts";
 import {
   createOnnxEmbeddingProvider,
   type OnnxEmbeddingConfig,
@@ -264,6 +270,151 @@ describe("ONNX provider identity and lazy initialization", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+});
+
+const modelRevision = "0".repeat(40);
+const modelFiles = [
+  "config.json",
+  "tokenizer.json",
+  "tokenizer_config.json",
+  "onnx/model_quantized.onnx",
+] as const;
+
+interface DownloadProbe {
+  readonly fetcher: typeof fetch;
+  readonly fileRequests: () => number;
+  readonly cancelled: () => boolean;
+}
+
+/** Serves pinned metadata and one model file body without touching the network. */
+function modelDownloadProbe(options: {
+  readonly bodySize: number;
+  readonly metadataSize: number;
+}): DownloadProbe {
+  let fileRequests = 0;
+  let cancelled = false;
+  const fetcher = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("/api/models/"))
+      return Response.json({
+        sha: modelRevision,
+        siblings: modelFiles.map((rfilename) => ({
+          rfilename,
+          size: options.metadataSize,
+          blobId: "a".repeat(40),
+        })),
+      });
+    fileRequests++;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(options.bodySize));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    return new Response(stream, { status: 200 });
+  }) as typeof fetch;
+  return { fetcher, fileRequests: () => fileRequests, cancelled: () => cancelled };
+}
+
+describe("model download cleanup with a mocked transport", () => {
+  // Directory permissions only restrict an unprivileged process.
+  test.skipIf(process.getuid?.() === 0)(
+    "a failing temporary-file open cancels the response body it already acquired",
+    async () => {
+      const directory = await mkdtemp(path.join(tmpdir(), "object-mcp-model-open-"));
+      const original = globalThis.fetch;
+      const probe = modelDownloadProbe({ bodySize: 8, metadataSize: 8 });
+      try {
+        const cacheDir = path.join(directory, "cache");
+        const snapshot = path.join(cacheDir, "acme", "encoder", modelRevision);
+        await mkdir(snapshot, { recursive: true });
+        // The snapshot exists but cannot hold a new file, so opening the temporary file fails.
+        await chmod(snapshot, 0o555);
+        globalThis.fetch = probe.fetcher;
+        const failure = await resolveModelDirectory(
+          {
+            ...onnxConfig,
+            model: "acme/encoder",
+            revision: modelRevision,
+            cacheDir,
+            localFilesOnly: false,
+          },
+          new AbortController().signal,
+        ).catch((error: unknown) => error);
+        expect(failure).toMatchObject({ code: "EACCES" });
+        expect(probe.cancelled()).toBe(true);
+        expect(await readdir(snapshot)).toEqual([]);
+      } finally {
+        globalThis.fetch = original;
+        await chmod(path.join(directory, "cache", "acme", "encoder", modelRevision), 0o755).catch(
+          () => {},
+        );
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test("an oversized download is cancelled and leaves no temporary residue", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "object-mcp-model-oversize-"));
+    const original = globalThis.fetch;
+    const probe = modelDownloadProbe({ bodySize: 64, metadataSize: 8 });
+    try {
+      globalThis.fetch = probe.fetcher;
+      const failure = await resolveModelDirectory(
+        {
+          ...onnxConfig,
+          model: "acme/encoder",
+          revision: modelRevision,
+          cacheDir: path.join(directory, "cache"),
+          localFilesOnly: false,
+        },
+        new AbortController().signal,
+      ).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(EmbeddingError);
+      expect((failure as EmbeddingError).code).toBe("MODEL_DOWNLOAD");
+      expect((failure as EmbeddingError).message).toContain("exceeds its pinned metadata size");
+      expect(probe.cancelled()).toBe(true);
+      const snapshot = path.join(directory, "cache", "acme", "encoder", modelRevision);
+      expect(await readdir(snapshot)).toEqual([]);
+    } finally {
+      globalThis.fetch = original;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "a directory that cannot be created fails before any model body is requested",
+    async () => {
+      const directory = await mkdtemp(path.join(tmpdir(), "object-mcp-model-mkdir-"));
+      const original = globalThis.fetch;
+      const probe = modelDownloadProbe({ bodySize: 8, metadataSize: 8 });
+      try {
+        const cacheDir = path.join(directory, "cache");
+        await mkdir(cacheDir, { recursive: true });
+        await chmod(cacheDir, 0o555);
+        globalThis.fetch = probe.fetcher;
+        const failure = await resolveModelDirectory(
+          {
+            ...onnxConfig,
+            model: "acme/encoder",
+            revision: modelRevision,
+            cacheDir,
+            localFilesOnly: false,
+          },
+          new AbortController().signal,
+        ).catch((error: unknown) => error);
+        expect(failure).toMatchObject({ code: "EACCES" });
+        expect(probe.fileRequests()).toBe(0);
+        expect(probe.cancelled()).toBe(false);
+      } finally {
+        globalThis.fetch = original;
+        await chmod(path.join(directory, "cache"), 0o755).catch(() => {});
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 const liveOnnxConfig = process.env.OBJECT_MCP_ONNX_TEST_CONFIG;

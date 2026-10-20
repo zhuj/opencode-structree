@@ -110,6 +110,19 @@ for (const driver of ["better-sqlite3", "bun"] as const) {
       expect(database.search({ query: "green", mode: "fulltext", types: [] }).hits).toHaveLength(0);
     });
 
+    test("full-text hits are ranked by BM25 rather than by insertion order", () => {
+      const database = open(driver);
+      const strong = source("project", "strong", "orchard orchard orchard", "orchard", "orchard");
+      const weak = source("project", "weak", "orchard", "orchard", "orchard");
+      // The weaker document is indexed first, so the ranking cannot follow the insertion order.
+      database.upsertDocument(weak);
+      database.upsertDocument(strong);
+      const hits = database.search({ query: "orchard", mode: "fulltext" }).hits;
+      expect(hits.map((hit) => hit.id)).toEqual(["strong", "weak"]);
+      expect(hits.map((hit) => hit.fulltextRank)).toEqual([1, 2]);
+      expect(hits[0]!.score).toBeGreaterThan(hits[1]!.score);
+    });
+
     test("type restriction and distinct-document ranking happen before semantic top-N", () => {
       const database = open(driver);
       for (let index = 0; index < 8; index++) {

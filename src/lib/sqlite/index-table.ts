@@ -227,7 +227,7 @@ export abstract class IndexedTable<Row extends object> extends Table<Row> {
     if (this.vectorIndex === undefined) throw new IndexNotConfiguredError("vector");
     return this.vectorIndex
       .searchRows(embedding, { ...(filter === undefined ? {} : { filter }), limit })
-      .map((row) => ({ row, distance: row.distance }));
+      .map((match) => ({ row: match.row, distance: match.distance }));
   }
 
   async searchByText(
@@ -272,16 +272,16 @@ export abstract class IndexedTable<Row extends object> extends Table<Row> {
         { row: Row; distance: number; rank?: number; combined: number }
       >();
       // Reciprocal rank fusion uses ordinal ranks from both lists, never raw BM25 values.
-      for (const [index, row] of vectors.entries()) {
-        merged.set(this.rowId(row), {
-          row,
-          distance: row.distance,
+      for (const [index, match] of vectors.entries()) {
+        merged.set(this.rowId(match.row), {
+          row: match.row,
+          distance: match.distance,
           combined: alpha / (60 + index + 1),
         });
       }
-      for (const [index, row] of lexical.entries()) {
-        const id = this.rowId(row);
-        const result = merged.get(id) ?? { row, distance: 1, combined: 0 };
+      for (const [index, match] of lexical.entries()) {
+        const id = this.rowId(match.row);
+        const result = merged.get(id) ?? { row: match.row, distance: 1, combined: 0 };
         result.rank = index + 1;
         result.combined += (1 - alpha) / (60 + index + 1);
         merged.set(id, result);
@@ -322,21 +322,8 @@ export abstract class IndexedTable<Row extends object> extends Table<Row> {
       if (fts !== undefined) ftsIndex?.replaceSync(id, fts);
       if (vectors !== undefined && vectorMetadata !== undefined && vectorIndex !== undefined) {
         vectorIndex.replaceSync(id, vectors, vectorMetadata);
-        const freshness = vectorIndex.options.freshness;
-        if (freshness !== undefined) {
-          const first = vectors[0];
-          if (first === undefined)
-            throw new Error("Prepared vectors must include the whole-file embedding.");
-          const patch: Record<string, unknown> = {};
-          if (freshness.fingerprint !== undefined)
-            patch[freshness.fingerprint] = vectorMetadata.fingerprint;
-          if (freshness.dimensions !== undefined)
-            patch[freshness.dimensions] = first.chunk.vector.length;
-          if (freshness.embeddingChecksum !== undefined)
-            patch[freshness.embeddingChecksum] = vectorMetadata.checksum;
-          // This marker update must not run the normal vector-invalidating source update hook.
-          super.updateSync(id, patch as Partial<Row>);
-        }
+        // This marker update must not run the normal vector-invalidating source update hook.
+        vectorIndex.publishFreshness(id, vectors, vectorMetadata);
       }
     };
   }
