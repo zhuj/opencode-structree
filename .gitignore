@@ -5,6 +5,7 @@ node_modules/
 **/.object-mcp-*.tmp
 *.log
 
+.idea
 .tmp
 .local
 .codegraph
