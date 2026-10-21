@@ -13,5 +13,7 @@ These records document the implemented choices and their trade-offs. Each record
 | [0007](0007-advertise-effective-bounds-and-bound-status-output.md) | accepted | Advertise the effective bounds, bound the status report with visible counters, and publish the type names, the object model and the workflow in the existing tool surface. |
 | [0008](0008-search-query-and-availability-guidance.md) | accepted | Publish truthful lexical query, type-filter, provider-availability and bounded-discovery guidance without changing retrieval or status shapes. |
 | [0009](0009-fulltext-search-excerpts.md) | accepted | Return bounded native lexical evidence in optional fulltextExcerpt, permitting source-content disclosure independently of includeBody while preserving semantic chunk coordinates. |
+| [0010](0010-prepare-the-model-snapshot-at-startup.md) | accepted | Prepare the pinned ONNX snapshot for CLI serve and sync, fetching missing files by default while preserving the offline switch, explicit library preparation, lazy model loading and nonfatal startup failures. |
+| [0011](0011-publish-the-observed-surface-and-reject-empty-identifiers.md) | accepted | Publish INTERNAL lexical overflow, semantic ranking without lexical tokens and retired-object visibility; retain the bounded-query cap and reject empty identifiers without validating target existence. |
 
 The records identify actual test evidence and practical limits. Future changes should supersede a decision with a new numbered record rather than rewrite accepted history.

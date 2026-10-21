@@ -66,6 +66,11 @@ thing to isolate, ahead of any change to the library.
 `feature_create` with `relations.project: "no-such-project"` was accepted and stored, with no
 issue and no warning.
 
+The current identifier rule refuses an empty object, owner or relation-array
+identifier with `VALIDATION` before any target is considered. This does not add
+target-existence validation: the non-empty missing target in this finding is
+still stored as written. See [decision 0011](decisions/0011-publish-the-observed-surface-and-reject-empty-identifiers.md).
+
 The first version of this document called that a defect. It is not. `docs/core-schemas.md`
 states that "Required owner IDs do not imply target existence, inverse consistency, or
 hierarchy/dependency cycle validation", and that "Cross-object validation can be added at an
@@ -372,7 +377,7 @@ the server's own behavior is the opposite of what was suspected.
 
 | Finding | Status | What the implementation does |
 | --- | --- | --- |
-| F1 | `not applicable` | The permissiveness is a documented design choice and stays one: relation targets are still not validated, and no write is rejected on their account. The surface now states it, in the `guidance` array of `objects_definitions`: "Relation targets are not validated: a link to an object that does not exist is stored as written." Link diagnostics remain an application-boundary option and are not implemented. |
+| F1 | `not applicable` | The permissiveness is a documented design choice and stays one: relation targets are still not validated for existence; empty identifiers are refused before any target is considered. The surface states it in the `guidance` array of `objects_definitions`: "Relation targets are not validated: a link to an object that does not exist is stored as written." Link diagnostics remain an application-boundary option and are not implemented. |
 | F2 | `fixed` | The list and search input schemas are built per facade. The list `limit` is an integer from 1 to 1000 and defaults to 50, the list `offset` is 0 or more and defaults to 0, and the search `topN` is an integer from 1 to the configured `search.maxTopN` and defaults to the configured `search.defaultTopN`. A facade that exposes no search configuration advertises the built-in defaults, 100 and 10. |
 | F3 | `fixed` | The `mode` description states that the default is hybrid when an embedding provider is configured and full-text otherwise. A provider failure keeps the `EMBEDDINGS_UNAVAILABLE` code and its cause, and the message ends with `Search with mode "fulltext" to query without embeddings.` An explicitly requested semantic or hybrid search is still never downgraded to full-text. |
 | F4 | `fixed` | The status report lists at most 50 issues and adds `issuesTotal`, `issuesTruncated` and `issuesByCode`, a count per issue code; `lastSync` carries the same four fields. The stored report is not mutated, so the report returned by `objects_resync` still lists every issue. The 132,077-character status response measured in this document is the reason for the bound. |

@@ -486,6 +486,8 @@ These were the five open questions as this plan was written. They were subsequen
 
 ## Decisions Closed
 
+ADR [0010](decisions/0010-prepare-the-model-snapshot-at-startup.md) later changed the provider clause of the mode description below to describe startup snapshot preparation.
+
 An advisory review was asked to answer the open questions rather than to recommend options. Each question below is closed with a single answer, the rationale that survives a challenge, the consequences that are being accepted, and the observable trigger that would reopen it. One execution approval covers the selected scope; no second design approval is needed between milestones. The review performed no writes, experiments, builds, network calls or model preparation.
 
 ### D1: add a separate lexical excerpt
@@ -536,11 +538,11 @@ An advisory review was asked to answer the open questions rather than to recomme
 
 ### Final MCP Descriptions After P1 And P2
 
-These are the replacement strings for `src/lib/mcp.ts`. They describe the existing implementation and do not advertise the excerpt before P3b.
+These strings track the current descriptions in `src/lib/mcp.ts`, including the published excerpt disclosure. The surrounding plan retains its historical sequence.
 
 `objects_search.query`:
 
-> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more causes an error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
+> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more fails with an INTERNAL error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
 
 `objects_search.types`:
 
@@ -548,11 +550,11 @@ These are the replacement strings for `src/lib/mcp.ts`. They describe the existi
 
 `objects_search.mode`:
 
-> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.
+> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; the local ONNX provider fetches its pinned model snapshot at startup when the snapshot is missing and downloads are permitted. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. In hybrid mode a query with no lexical tokens still runs the semantic ranking, and those hits carry no lexical evidence. Valid requests with types: [] return no hits without invoking a provider.
 
 `objects_search`:
 
-> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true.
+> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
 
 `objects_status`:
 

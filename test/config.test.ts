@@ -333,6 +333,16 @@ test("the ONNX provider selects a CPU or CUDA execution device and defaults to t
   }
 });
 
+test("the ONNX provider fetches a missing model snapshot by default and keeps the offline switch", () => {
+  const defaults = defineConfig();
+  expect(defaults.embeddings.provider).toBe("onnx");
+  if (defaults.embeddings.provider !== "onnx") throw new Error("Expected the onnx provider.");
+  expect(defaults.embeddings.localFilesOnly).toBe(false);
+  const offline = defineConfig({ embeddings: { provider: "onnx", localFilesOnly: true } });
+  if (offline.embeddings.provider !== "onnx") throw new Error("Expected the onnx provider.");
+  expect(offline.embeddings.localFilesOnly).toBe(true);
+});
+
 test("the OpenAI provider accepts an optional literal API key and a keyless endpoint", () => {
   const defaults = defineConfig({ embeddings: { provider: "openai" } });
   if (defaults.embeddings.provider !== "openai") throw new Error("Expected the openai provider.");

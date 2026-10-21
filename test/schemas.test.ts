@@ -60,12 +60,21 @@ describe("the twelve core Effect schemas", () => {
     }
   });
 
-  test("validate shapes without inventing identifier or relationship integrity constraints", () => {
+  test("reject empty identifiers without validating relation targets or relationship integrity", () => {
     const feature = {
       ...object("feature"),
-      id: "",
       relations: { project: "unregistered project", commitment: { goals: ["same", "same"] } },
     };
+    expect(() => Schema.decodeUnknownSync(FeatureSchema)({ ...feature, id: "" })).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(FeatureSchema)({
+        ...feature,
+        relations: { ...feature.relations, project: "" },
+      }),
+    ).toThrow();
+    expect(Schema.decodeUnknownSync(FeatureSchema)(feature).relations.project).toBe(
+      "unregistered project",
+    );
     expect(Schema.decodeUnknownSync(FeatureSchema)(feature).relations.commitment.goals).toEqual([
       "same",
       "same",
@@ -81,6 +90,12 @@ describe("the twelve core Effect schemas", () => {
       },
     };
     expect(Schema.decodeUnknownSync(ScenarioSchema)(scenario).relations.partOf).toBe("self");
+    expect(() =>
+      Schema.decodeUnknownSync(ScenarioSchema)({
+        ...scenario,
+        relations: { ...scenario.relations, dependsOn: [""] },
+      }),
+    ).toThrow();
     expect(Object.keys(FeatureSchema.fields.relations.fields)).toEqual(["project", "commitment"]);
   });
 
@@ -91,6 +106,9 @@ describe("the twelve core Effect schemas", () => {
       expect(decoded.createdAt).toBeInstanceOf(Date);
       expect(decoded.retiredAt).toBeNull();
     }
+    expect(
+      Schema.decodeUnknownSync(ScenarioSchema)(object("scenario")).relations.partOf,
+    ).toBeNull();
     expect(
       registry.decode("project", { ...object("project"), retiredAt: new Date("2026-10-18Z") })
         .retiredAt,
@@ -129,11 +147,37 @@ describe("registry wire and persistence boundaries", () => {
     const schema = registry.jsonSchema("feature");
     expect(schema.additionalProperties).toBe(false);
     expect(schema.required).toContain("retiredAt");
+    for (const definition of coreDefinitions) {
+      expect(registry.jsonSchema(definition.name)).toHaveProperty("properties.id.minLength", 1);
+    }
+    expect(schema).toHaveProperty(
+      "properties.id.description",
+      "Object identifier. Must not be empty.",
+    );
+    for (const [type, relation] of [
+      ["project_goal", "project"],
+      ["feature", "project"],
+      ["scenario", "project"],
+      ["scenario_acceptance_criteria", "scenario"],
+    ] as const) {
+      expect(registry.jsonSchema(type)).toHaveProperty(
+        `properties.relations.properties.${relation}.minLength`,
+        1,
+      );
+    }
+    expect(registry.jsonSchema("scenario")).toHaveProperty(
+      "properties.relations.properties.dependsOn.items.minLength",
+      1,
+    );
+    expect(schema).toHaveProperty(
+      "properties.retiredAt.description",
+      "Retirement timestamp, or null for an active object. A retired object is still listed and searchable; check this field to exclude it.",
+    );
     expect(schema).toHaveProperty("properties.createdAt.type", "string");
     expect(schema).toHaveProperty("properties.relations.required", ["project", "commitment"]);
     expect(schema).toHaveProperty(
       "properties.relations.properties.project.description",
-      expect.stringContaining("project identifier"),
+      "Required owning project identifier. Must not be empty.",
     );
     expect(schema).toHaveProperty("properties.relations.properties.commitment.required", ["goals"]);
     expect(schema).toHaveProperty(

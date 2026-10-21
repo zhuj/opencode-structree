@@ -19,13 +19,13 @@ export interface McpToolOptions {
 }
 
 const IdInput = Schema.Struct({
-  id: Schema.String.annotate({ description: "Object identifier." }),
+  id: Schema.NonEmptyString.annotate({ description: "Object identifier. Must not be empty." }),
 });
 // An empty Effect Struct also accepts non-objects; a string-keyed Never record accepts only {}.
 const EmptyInput = Schema.Record(Schema.String, Schema.Never);
 const NonnegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const DeleteInput = Schema.Struct({
-  id: Schema.String,
+  id: Schema.NonEmptyString.annotate({ description: "Object identifier. Must not be empty." }),
   expectedChecksum: Schema.NonEmptyString.annotate({
     description:
       "Checksum returned by the latest get/list/create/update; prevents overwriting a newer revision.",
@@ -61,11 +61,11 @@ function buildInputSchemas(search: EffectiveSearch, typeNames: readonly string[]
     search: Schema.Struct({
       query: Schema.NonEmptyString.annotate({
         description:
-          "Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more causes an error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.",
+          "Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more fails with an INTERNAL error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.",
       }),
       mode: Schema.optionalKey(Schema.Literals(["fulltext", "semantic", "hybrid"])).annotate({
         description:
-          'Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.',
+          'Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; the local ONNX provider fetches its pinned model snapshot at startup when the snapshot is missing and downloads are permitted. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. In hybrid mode a query with no lexical tokens still runs the semantic ranking, and those hits carry no lexical evidence. Valid requests with types: [] return no hits without invoking a provider.',
       }),
       types: Schema.optionalKey(Schema.Array(typeName)).annotate({
         description:
@@ -255,9 +255,14 @@ export function registerObjectTools(
     server.registerTool(
       `${definition.name}_create`,
       {
-        description: `Create one ${definition.name} Markdown file. Supply all object fields, including timestamps and nullable fields. Omitted body defaults to an empty string. ${definition.description} ${WORKFLOW_CLAUSE}`,
+        description: `Create one ${definition.name} Markdown file. Supply all object fields, including timestamps and nullable fields. Identifiers must not be empty. Omitted body defaults to an empty string. ${definition.description} ${WORKFLOW_CLAUSE}`,
         inputSchema: input.schema(
-          Schema.Struct({ object: definition.schema, body: Schema.optionalKey(Schema.String) }),
+          Schema.Struct({
+            object: definition.schema.annotate({
+              description: "The complete object. Identifiers must not be empty.",
+            }),
+            body: Schema.optionalKey(Schema.String),
+          }),
         ),
         outputSchema: storedOutput,
         annotations: {
@@ -292,11 +297,15 @@ export function registerObjectTools(
     server.registerTool(
       `${definition.name}_update`,
       {
-        description: `Replace a complete ${definition.name} object and Markdown body. The identifier and createdAt timestamp are immutable. Supply the latest checksum and your updatedAt timestamp. ${WORKFLOW_CLAUSE}`,
+        description: `Replace a complete ${definition.name} object and Markdown body. The identifier and createdAt timestamp are immutable. Identifiers must not be empty. Supply the latest checksum and your updatedAt timestamp. ${WORKFLOW_CLAUSE}`,
         inputSchema: input.schema(
           Schema.Struct({
-            id: Schema.String,
-            object: definition.schema,
+            id: Schema.NonEmptyString.annotate({
+              description: "Object identifier. Must not be empty.",
+            }),
+            object: definition.schema.annotate({
+              description: "The complete object. Identifiers must not be empty.",
+            }),
             body: Schema.String,
             expectedChecksum: Schema.NonEmptyString.annotate({
               description: "Checksum of the revision being replaced.",
@@ -354,7 +363,7 @@ export function registerObjectTools(
     server.registerTool(
       `${definition.name}_list`,
       {
-        description: `List ${definition.name} objects read from the filesystem, in identifier order. Set includeBody to false to omit the Markdown body and return only identity, title, path and checksum. ${WORKFLOW_CLAUSE}`,
+        description: `List ${definition.name} objects read from the filesystem, in identifier order. A retired object is still listed; check its retiredAt field to exclude it. Set includeBody to false to omit the Markdown body and return only identity, title, path and checksum. ${WORKFLOW_CLAUSE}`,
         inputSchema: input.schema(listInput),
         outputSchema: effectMcpSchema(
           Schema.Struct({

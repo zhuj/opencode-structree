@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { loadConfig } from "../src/lib/config.ts";
@@ -10,7 +11,7 @@ import {
   weightedMean,
 } from "../src/lib/embeddings/common.ts";
 import { createEmbeddingProvider } from "../src/lib/embeddings/index.ts";
-import { resolveModelDirectory } from "../src/lib/embeddings/model-cache.ts";
+import { ensureModelSnapshot, resolveModelDirectory } from "../src/lib/embeddings/model-cache.ts";
 import {
   buildOnnxRuntimeOptions,
   createOnnxEmbeddingProvider,
@@ -692,3 +693,112 @@ test.skipIf(!liveOnnxConfig)(
   },
   120_000,
 );
+
+/** A model probe whose blob id matches the content it serves, so a download can complete. */
+function preparedModelProbe(size: number): {
+  readonly fetcher: typeof fetch;
+  readonly fileRequests: () => number;
+} {
+  const content = new Uint8Array(size);
+  const blobId = createHash("sha1").update(`blob ${size}\0`).update(content).digest("hex");
+  let fileRequests = 0;
+  const fetcher = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.includes("/api/models/"))
+      return Response.json({
+        sha: modelRevision,
+        siblings: modelFiles.map((rfilename) => ({ rfilename, size, blobId })),
+      });
+    fileRequests++;
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(content);
+          controller.close();
+        },
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+  return { fetcher, fileRequests: () => fileRequests };
+}
+
+describe("model snapshot preparation", () => {
+  test("a complete snapshot is used without any network request", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "object-mcp-model-ready-"));
+    const original = globalThis.fetch;
+    const probe = preparedModelProbe(8);
+    try {
+      globalThis.fetch = probe.fetcher;
+      const cacheDir = path.join(directory, "cache");
+      const snapshot = path.join(cacheDir, "acme", "encoder", modelRevision);
+      await mkdir(path.join(snapshot, "onnx"), { recursive: true });
+      for (const file of modelFiles) await writeFile(path.join(snapshot, file), "prepared");
+      const resolved = await ensureModelSnapshot({
+        ...onnxConfig,
+        model: "acme/encoder",
+        revision: modelRevision,
+        cacheDir,
+        localFilesOnly: false,
+      });
+      expect(resolved).toBe(snapshot);
+      expect(probe.fileRequests()).toBe(0);
+    } finally {
+      globalThis.fetch = original;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("a missing snapshot is refused when downloads are not permitted", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "object-mcp-model-offline-"));
+    try {
+      const failure = await ensureModelSnapshot({
+        ...onnxConfig,
+        model: "acme/encoder",
+        revision: modelRevision,
+        cacheDir: path.join(directory, "cache"),
+        localFilesOnly: true,
+      }).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: "MODEL_NOT_CACHED" });
+      expect((failure as { message: string }).message).toContain("localFilesOnly");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("the provider fetches a missing snapshot when downloads are permitted", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "object-mcp-model-prepare-"));
+    const original = globalThis.fetch;
+    const probe = preparedModelProbe(8);
+    try {
+      globalThis.fetch = probe.fetcher;
+      const cacheDir = path.join(directory, "cache");
+      const provider = await createOnnxEmbeddingProvider({
+        ...onnxConfig,
+        model: "acme/encoder",
+        revision: modelRevision,
+        cacheDir,
+        localFilesOnly: false,
+      });
+      try {
+        await provider.prepare?.();
+        const snapshot = path.join(cacheDir, "acme", "encoder", modelRevision);
+        for (const file of modelFiles) {
+          const prepared = path.join(snapshot, file);
+          expect(
+            await stat(prepared).then(
+              () => true,
+              () => false,
+            ),
+          ).toBe(true);
+        }
+        expect(probe.fileRequests()).toBe(modelFiles.length);
+      } finally {
+        await provider.close();
+      }
+    } finally {
+      globalThis.fetch = original;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});

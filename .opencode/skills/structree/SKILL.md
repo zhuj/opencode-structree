@@ -74,8 +74,11 @@ and whether it is required, is in `references/object-model.md`.
 
 Two properties of the relations are worth knowing before you write:
 
-- **Relation targets are not validated.** A link to an id that does not exist is
-  stored as written. Get the target ids first, so the graph stays walkable.
+- **Relation targets are not validated.** Empty identifiers are refused before
+  any target is considered: the object id, owner identifiers such as
+  `relations.project`, and each id inside a relation array must be non-empty.
+  A non-empty id that names no existing target is still stored as written.
+  Get the target ids first, so the graph stays walkable.
 - **`commitment`, `commitsTo` and `relatesTo` are how intent meets reality.**
   They are the only thing that connects a criterion to the test that proves it,
   or an interface to the decision that justifies it. Filling them in is usually
@@ -110,13 +113,24 @@ the kind of object you are looking for:
 
 Use the advertised query guidance:
 
-> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more causes an error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
+> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more fails with an INTERNAL error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
 
 The type-filter and mode guidance is:
 
 > Restrict both lexical and semantic candidates to these registered types before ranking limits. Omit for all types; [] searches none. Type and directory names are not added to searchable text. Use the type's list tool to enumerate objects without a content query.
 
-> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.
+> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; the local ONNX provider fetches its pinned model snapshot at startup when the snapshot is missing and downloads are permitted. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. In hybrid mode a query with no lexical tokens still runs the semantic ranking, and those hits carry no lexical evidence. Valid requests with types: [] return no hits without invoking a provider.
+
+The CLI prepares the local ONNX provider for `serve` and `sync`, not `status`.
+The built-in `embeddings.localFilesOnly` default is false, permitting missing
+pinned model files to be fetched. True retains offline-only behavior: a missing
+snapshot reports `MODEL_NOT_CACHED` without fetching. A complete snapshot needs
+no network request during preparation. Preparation leaves the model unloaded;
+inference loads it lazily when needed. A preparation failure is reported without
+stopping the server or full-text search. Library hosts decide whether to call
+`prepareEmbeddings()`; framework creation does not prepare automatically.
+Do not treat successful preparation or status metadata as proof of working
+inference, and do not change provider configuration to repair a failed query.
 
 The search tool states:
 
@@ -126,7 +140,12 @@ Use a few content words, not the words of the type name. Two words can match
 anywhere, not necessarily together; `reconcil*` searches `reconcil`, not every
 word starting with it. `cafe` can match `café`. Repeated identical tokens do
 not use extra distinct-token slots, but case variants can count separately
-before folding. Overflow currently returns `INTERNAL`, not `VALIDATION`.
+before SQLite case and diacritic folding. The cap is a self-imposed bound on the
+generated FTS5 MATCH expression, not a SQLite limit; it fails rather than
+truncates. On 2026-10-21 SQLite 3.53.4 executed 2000 AND-joined and 5000 OR-joined
+terms without error. See [decision 0011](../../../docs/decisions/0011-publish-the-observed-surface-and-reject-empty-identifiers.md).
+With no lexical tokens, hybrid hits have `fulltextRank: null` and a set
+`semanticDistance`.
 Hybrid's provider can fail before lexical evaluation, including for punctuation
 only. Fulltext is embedding-free, not a promise that every request succeeds.
 Search's `matchedChunk` is nullable and semantic, not lexical evidence.
@@ -159,7 +178,9 @@ checksum. The checksum is not decoration: it is what authorizes the next write.
 ### 4. Write
 
 Every object needs all of its fields, including the null ones. `retiredAt` is
-`null` for a live object, and `relations` is an object even when empty.
+`null` for a live object. A retired object is still listed and searchable; check
+`retiredAt` to exclude it. This is existing behavior, not a retrieval change.
+`relations` is an object even when empty.
 
 **Create** supplies every field. Timestamps are yours to set, not the server's:
 
@@ -215,9 +236,8 @@ must not change anything.
   revision they replace. Read before you write.
 - **Timestamps belong to the caller.** The server records what you send. Send
   the real time of the change.
-- **Relations are not checked, so check them.** Nothing stops you from
-  committing a link to an id that does not exist, and nothing will warn you
-  later.
+- **An empty array is not an empty identifier.** Use `[]` for a list with no
+  links and explicit `null` for a nullable parent, never `""` as a placeholder.
 - **Search can miss.** Confirm a known id with `get` and fully paginate the
   relevant type's list for enumeration. Resync is a write, not a prerequisite
   for a read-only investigation.
@@ -269,12 +289,12 @@ for the work.
 | --- | --- | --- |
 | `EMBEDDINGS_UNAVAILABLE` | The embedding provider failed, so semantic or hybrid search cannot run | Search again with `mode: "fulltext"` |
 | `EMBEDDINGS_DISABLED` | No provider instance exists and you asked for semantic or hybrid | Use `mode: "fulltext"` |
-| `INTERNAL` after a long lexical query | More than 128 distinct extracted tokens can exceed the encoder limit | Use fewer distinct content tokens; report other internal failures |
+| `INTERNAL` after a long lexical query | Lexical encoder overflow above 128 distinct extracted tokens | Shorten your own over-limit query; report other internal failures |
 | `UNKNOWN_TYPE` | The type name is wrong | The error details carry `registeredTypes`, the names that exist |
 | `ALREADY_EXISTS` | The id is taken | `get` that id and update it, or choose another id |
 | `CHECKSUM_CONFLICT` | The revision moved since you read it | `get` it again and reapply your change |
 | `IMMUTABLE_ID` or `IMMUTABLE_CREATED_AT` | The update tried to change a frozen field | Keep the original values |
-| Validation error naming a field | The schema wants a field you omitted; every base field is required | Check `objects_definitions` for the type |
+| `VALIDATION` / `VALIDATION_ERROR` | A field is missing or invalid, including an empty object, owner or relation-array identifier | Supply a non-empty identifier; check `objects_definitions` for other field errors |
 | A search misses an object you know exists | Results are bounded and the searchable state can be behind the last change | Confirm a known id with `get`; fully paginate the type's list for enumeration; resync only when a write is permitted |
 
 ## References

@@ -41,19 +41,45 @@ These internal provider windows are disjoint. The configured 10% overlap applies
 
 The default is `Xenova/multilingual-e5-small` at immutable commit `761b726dd34fb83930e26aab4e9ac3899aa1fa78`, q8 weights, 384 dimensions, and a 512-token ceiling. Query text receives `query: ` and document text receives `passage: `, as required by E5's retrieval training. Prefixes are configuration fields; models such as MiniLM generally use empty prefixes. [E5 model card](https://huggingface.co/intfloat/multilingual-e5-small), [ONNX export](https://huggingface.co/Xenova/multilingual-e5-small/tree/761b726dd34fb83930e26aab4e9ac3899aa1fa78).
 
-Prepare the configured model explicitly:
+The CLI prepares the configured provider at startup for `serve` and `sync`.
+The built-in default is now `embeddings.localFilesOnly: false`: when required
+snapshot files are missing, preparation fetches the missing files for the pinned
+revision. `ensureModelSnapshot` returns the pinned snapshot directory without
+any network request when every required file is already present. This fast path
+checks file presence, not a fresh integrity or inference check.
+
+Set `embeddings.localFilesOnly: true` for the previous offline-only behavior.
+A missing snapshot reports `MODEL_NOT_CACHED` and nothing is fetched. Its message
+explains that the snapshot is fetched at startup when the switch is false and
+otherwise names the manual preparation command. Manual preparation remains an
+optional provisioning and verification path, not the normal startup prerequisite:
 
 ```sh
 bun scripts/prepare-model.ts --config object-mcp.config.json
 ```
 
-Preparation downloads public model assets, verifies their pinned Git blob or LFS SHA-256 hashes, and runs inference on a synthetic verification sentence. The default q8 E5 weight file is approximately 118 MB, plus the tokenizer and configuration. The weights are not part of the source package.
+The manual script downloads public model assets, verifies their pinned Git blob or LFS SHA-256 hashes, and runs inference on a synthetic verification sentence. Startup preparation verifies downloaded files against the pinned metadata but does not run that inference check. The default q8 E5 weight file is approximately 118 MB, plus the tokenizer and configuration. The weights are not part of the source package.
 
-Normal operation defaults to `localFilesOnly: true`. It reads the snapshot at `<cacheDir>/<model>/<revision>` and makes no model-download requests. A missing snapshot reports `MODEL_NOT_CACHED` with the preparation command. Full-text indexing remains available through the framework when semantic indexing is pending.
+The snapshot lives at `<cacheDir>/<model>/<revision>`. Preparation fetches files;
+it does not load the model. Loading is still lazy when inference first needs it.
+The CLI's read-only `status` command does not call preparation. In the library,
+`prepareEmbeddings()` calls the provider's optional `prepare`, records a failure
+as the framework's last error and rethrows it. The embedding host decides whether
+to call that method; framework creation does not automatically prepare or fetch
+the snapshot. The CLI catches a preparation failure after it is reported and
+still starts the server. Full-text search keeps working, while semantic/hybrid
+requests retain the provider errors described below. See
+[decision 0010](decisions/0010-prepare-the-model-snapshot-at-startup.md).
 
 The advertised search mode guidance is:
 
-> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.
+> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; the local ONNX provider fetches its pinned model snapshot at startup when the snapshot is missing and downloads are permitted. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. In hybrid mode a query with no lexical tokens still runs the semantic ranking, and those hits carry no lexical evidence. Valid requests with types: [] return no hits without invoking a provider.
+
+Hybrid hits from a query with no lexical tokens have `fulltextRank: null` and a
+set `semanticDistance`. Retirement does not remove an object from search or its
+type's list; callers inspect `retiredAt` to exclude it. This publishes existing
+retrieval behavior, not a behavior change. See
+[decision 0011](decisions/0011-publish-the-observed-surface-and-reject-empty-identifiers.md).
 
 The status tool states:
 

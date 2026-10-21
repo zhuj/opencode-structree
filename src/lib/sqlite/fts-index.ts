@@ -317,6 +317,7 @@ export class FTSIndex<Row extends object> {
 export function literalFtsQuery(query: string): string | undefined {
   const tokens = [...new Set(query.match(/[\p{L}\p{N}\p{M}]+/gu) ?? [])];
   if (tokens.length === 0) return undefined;
+  // This self-imposed bound counts distinct extracted tokens before SQLite folding, not a SQLite limit: FTS5 was measured on 2026-10-21 executing 2000 AND-joined and 5000 OR-joined terms without error on SQLite 3.53.4. Exceeding the cap fails rather than truncates; the failure surfaces as INTERNAL per docs/decisions/0008-search-query-and-availability-guidance.md.
   if (tokens.length > 128) throw new Error("Full-text search accepts at most 128 distinct tokens.");
   return tokens.map((token) => `"${token.replaceAll('"', '""')}"`).join(" AND ");
 }

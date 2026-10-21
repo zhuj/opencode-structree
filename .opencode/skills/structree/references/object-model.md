@@ -5,13 +5,13 @@ the schema, including the ones that are empty.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `id` | string | The stable handle. Unique within the type, and the target of every relation. An id is never renamed. |
+| `id` | non-empty string | The stable handle. Unique within the type, and the target of every relation. An id is never renamed. |
 | `name` | string | A short machine-ish name, often the same as the id suffix. |
 | `title` | string | The human-readable title. |
 | `description` | string | One line. The detail belongs in the body. |
 | `createdAt` | string | ISO timestamp. Set by the caller, immutable afterwards. |
 | `updatedAt` | string | ISO timestamp. Set by the caller, moves forward on update. |
-| `retiredAt` | string or null | When the object was retired. `null` for a live object. |
+| `retiredAt` | string or null | Retirement timestamp, or null for an active object. A retired object is still listed and searchable; check this field to exclude it. |
 | `tags` | object of string to string | Free-form labels. |
 | `metadata` | object | Additional JSON-compatible values. |
 | `relations` | object | The edges, shaped per type. See below. |
@@ -31,8 +31,13 @@ Two shapes appear in the relations, and they are easy to get wrong:
   `feature.commitment` is `{ "goals": [...] }`, `scenario.commitment` is
   `{ "features": [...] }`, and `adr.commitment` is `{ "scenarios": [...] }`.
 
-Relation targets are not validated by the server. An id that does not exist is
-stored as written, and nothing warns you later.
+Relation targets are not validated by the server. An empty identifier is refused
+before any target is considered: an empty object id, owner identifier such as
+`relations.project = ""`, or identifier inside a relation array fails with
+`VALIDATION`. A non-empty id naming a target that does not exist is stored as
+written, and nothing warns you later. Empty arrays and nullable parents remain
+valid. The retirement wording above publishes existing listing and search
+behavior, not a behavior change.
 
 ## Per type
 

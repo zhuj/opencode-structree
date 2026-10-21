@@ -67,9 +67,15 @@ class TestEmbeddingProvider implements EmbeddingProvider {
   readonly dimensions = 4;
   documentCalls = 0;
   closed = false;
+  prepareCalls = 0;
+  prepareFailure: Error | undefined;
   beforeDocument: ((texts: readonly string[], signal?: AbortSignal) => Promise<void>) | undefined;
   beforeQuery: ((texts: readonly string[], signal?: AbortSignal) => Promise<void>) | undefined;
   constructor(readonly fingerprint = "integration-test-v1") {}
+  async prepare(): Promise<void> {
+    this.prepareCalls++;
+    if (this.prepareFailure) throw this.prepareFailure;
+  }
   async embed(
     texts: readonly string[],
     purpose: "document" | "query",
@@ -752,5 +758,26 @@ describe("filesystem-authoritative framework", () => {
       await handler.close();
     }
     expect((await framework.list("project")).total).toBe(0);
+  });
+});
+
+describe("embedding preparation at startup", () => {
+  test("preparing the embeddings calls the provider once and reports a failure without hiding it", async () => {
+    const provider = new TestEmbeddingProvider();
+    const { framework } = await fixture({ provider });
+    try {
+      await framework.prepareEmbeddings();
+      expect(provider.prepareCalls).toBe(1);
+      expect(framework.status().lastError).toBeNull();
+
+      provider.prepareFailure = new Error("model snapshot is unreachable");
+      const failure = await framework.prepareEmbeddings().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(provider.prepareCalls).toBe(2);
+      const lastError = framework.status().lastError as { code: string; message: string } | null;
+      expect(lastError?.message).toContain("model snapshot is unreachable");
+    } finally {
+      await framework.close();
+    }
   });
 });

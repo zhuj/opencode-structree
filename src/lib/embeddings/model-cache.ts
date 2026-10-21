@@ -15,6 +15,22 @@ interface ModelFile {
 
 const suffixes = { fp32: "", fp16: "_fp16", q8: "_quantized", q4: "_q4" } as const;
 
+/** The pinned snapshot layout: where the files live and which of them the dtype needs. */
+interface SnapshotLayout {
+  readonly directory: string;
+  readonly required: readonly string[];
+  readonly modelFile: string;
+}
+
+function snapshotLayout(config: OnnxEmbeddingConfig): SnapshotLayout {
+  const modelFile = `onnx/model${suffixes[config.dtype]}.onnx`;
+  return {
+    directory: path.resolve(config.cacheDir, config.model, config.revision),
+    required: ["config.json", "tokenizer.json", "tokenizer_config.json", modelFile],
+    modelFile,
+  };
+}
+
 /** Local snapshot paths also prevent upstream metadata probes from falling back to a mutable main revision. */
 export async function resolveModelDirectory(
   config: OnnxEmbeddingConfig,
@@ -28,15 +44,13 @@ export async function resolveModelDirectory(
       "ONNX model must be a local directory or a Hugging Face model ID",
     );
   }
-  const directory = path.resolve(config.cacheDir, config.model, config.revision);
-  const modelFile = `onnx/model${suffixes[config.dtype]}.onnx`;
-  const required = ["config.json", "tokenizer.json", "tokenizer_config.json", modelFile];
+  const { directory, required, modelFile } = snapshotLayout(config);
   if (config.localFilesOnly) {
     for (const file of required) {
       if (!(await isFile(path.join(directory, file)))) {
         throw new EmbeddingError(
           "MODEL_NOT_CACHED",
-          `ONNX model snapshot is missing ${file}. Run bun scripts/prepare-model.ts --config <your-config.json> first`,
+          `ONNX model snapshot is missing ${file}. It is fetched at startup when embeddings.localFilesOnly is false; otherwise run bun scripts/prepare-model.ts --config <your-config.json> first`,
         );
       }
     }
@@ -117,6 +131,24 @@ export async function resolveModelDirectory(
     );
   }
   return directory;
+}
+
+/**
+ * Ensures the pinned snapshot exists, fetching the missing files when the configuration permits it.
+ * A complete snapshot is returned without any network request, so a prepared cache costs nothing.
+ */
+export async function ensureModelSnapshot(
+  config: OnnxEmbeddingConfig,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (path.isAbsolute(config.model) || config.model.startsWith("."))
+    return path.resolve(config.model);
+  const { directory, required } = snapshotLayout(config);
+  const present = await Promise.all(
+    required.map(async (file) => await isFile(path.join(directory, file))),
+  );
+  if (present.every(Boolean)) return directory;
+  return resolveModelDirectory(config, signal ?? new AbortController().signal);
 }
 
 async function isFile(filename: string): Promise<boolean> {

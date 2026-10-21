@@ -185,7 +185,7 @@ protect prepared work; they do not run an embedding model from a SQL trigger.
 The object index retains `unicode61 remove_diacritics 2`; no tokenizer or ranking
 change accompanies this guidance. The advertised query description is:
 
-> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more causes an error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
+> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more fails with an INTERNAL error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
 
 The type-filter description is:
 
@@ -201,6 +201,16 @@ rejected by the framework. No extracted tokens means no lexical candidates,
 not suppression of semantic evaluation in hybrid mode. `cafe` matches `café`;
 literal matching is not byte-exact substring matching. Both drivers exercise
 these guarantees in `test/sqlite.test.ts`.
+
+The 128-distinct-token cap is a self-imposed bound on the generated FTS5 MATCH
+expression, not a SQLite limit. It fails rather than truncates; callers shorten
+their own over-limit queries. On 2026-10-21 SQLite 3.53.4 executed 2000 AND-joined
+and 5000 OR-joined terms without error. See
+[decision 0011](decisions/0011-publish-the-observed-surface-and-reject-empty-identifiers.md).
+With no lexical tokens, hybrid still runs semantic ranking; those hits have
+`fulltextRank: null` and a set `semanticDistance`, with no lexical evidence.
+Retired objects remain listed and searchable; callers check `retiredAt` to
+exclude them. This describes existing behavior, not a retrieval change.
 
 ## Search result shapes
 

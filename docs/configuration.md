@@ -17,7 +17,7 @@ Configuration is validated by `FrameworkConfigSchema` in `src/lib/config.ts`. Pa
 
 Relative values resolve against the base directory of their layer. Values from a JSON `--config` file resolve against that file's own directory, values from the local override file resolve against the project root, and the built-in defaults resolve against the project root for the CLI and against `baseDirectory` for programmatic use. The shipped JSON configurations set `root`, `sqlite.path`, and the model cache explicitly, so their data always resolves to the repository root.
 
-The coordination database has a fixed name under the source root so all framework instances operating on that root use the same lock. With the default source root it is `.local/.structree/objects/.object-mcp-lock.sqlite`. It contains an empty coordination table, no source objects. Do not delete it while any instance is running. The search index and model cache can be discarded after shutting down all instances; startup then rebuilds search from Markdown, and missing models need preparation again.
+The coordination database has a fixed name under the source root so all framework instances operating on that root use the same lock. With the default source root it is `.local/.structree/objects/.object-mcp-lock.sqlite`. It contains an empty coordination table, no source objects. Do not delete it while any instance is running. The search index and model cache can be discarded after shutting down all instances; startup then rebuilds search from Markdown, and CLI `serve` and `sync` prepare missing model files again when downloads are permitted.
 
 Both native adapters were tested on Linux x64. Custom macOS SQLite loading is supported by configuration and its initialization guard is tested, but that platform was not exercised in this workspace.
 
@@ -37,7 +37,7 @@ embeddings:
   dimensions: 768
 ```
 
-The `embeddings` section follows the provider rules of the JSON configuration. Naming a provider selects that provider's defaults before the section's own values are applied. A section without `provider` keeps the provider of the layer below it, and a `disabled` provider owns no provider-specific fields, so model and dimension values are dropped while the provider stays disabled. `revision` must pin the same export as `model`; a local model directory replaces both. The snapshot for the selected export still has to be prepared, and the model identity participates in the cache fingerprint, so changing it invalidates the cached vectors of the affected objects. Because this file is ignored by Git, a literal `embeddings.apiKey` belongs here and not in a tracked configuration file.
+The `embeddings` section follows the provider rules of the JSON configuration. Naming a provider selects that provider's defaults before the section's own values are applied. A section without `provider` keeps the provider of the layer below it, and a `disabled` provider owns no provider-specific fields, so model and dimension values are dropped while the provider stays disabled. `revision` must pin the same export as `model`; a local model directory replaces both. CLI `serve` and `sync` prepare the selected snapshot, fetching missing files when `embeddings.localFilesOnly` is false (the built-in default); true requires an existing snapshot without fetching. The model identity participates in the cache fingerprint, so changing it invalidates the cached vectors of the affected objects. Because this file is ignored by Git, a literal `embeddings.apiKey` belongs here and not in a tracked configuration file.
 
 ## MCP input repair
 
@@ -114,13 +114,15 @@ Set `embeddings.provider` to `onnx`.
 | `dtype` | `q8` | `q8`, `fp32`, `fp16`, or `q4`; matching ONNX files must exist. |
 | `device` | `cpu` | Execution provider: `cpu` or `cuda`. The CPU execution provider is the default and always available. `cuda` needs the CUDA 12 runtime libraries present for the installed onnxruntime-node build; a backend that cannot be initialized fails with the `DEVICE_UNAVAILABLE` error code instead of an opaque runtime failure. The device participates in the cache fingerprint, so switching it invalidates the cached vectors. |
 | `cacheDir` | `.local/.structree/.cache/models` | Directory for verified snapshots; must be outside source root. |
-| `localFilesOnly` | `true` | Require a prepared snapshot. Set false only when explicitly permitting runtime model downloads. |
+| `localFilesOnly` | `false` | Permit fetching missing pinned snapshot files during preparation. Set true for offline-only operation: a missing snapshot reports `MODEL_NOT_CACHED` and nothing is fetched. |
 | `queryPrefix` | `query: ` | Prefix applied to query windows. |
 | `documentPrefix` | `passage: ` | Prefix applied to document windows. |
 | `maxTokens` | `512` | Configured context ceiling; actual tokenizer/model limits also apply. |
 | `batchSize` | `8` | Maximum inference batch size. |
 
-Run `bun scripts/prepare-model.ts --config path/to/config.json` to download and verify the configured model deliberately. For unusual model architectures, pooling conventions, or external tensor layouts, supply a local compatible export or implement `EmbeddingProvider` and inject it through `createFramework({embeddingProvider})`.
+The CLI calls `prepareEmbeddings()` for `serve` and `sync`, but not for the read-only `status` report. Preparation returns a complete pinned snapshot without a network request; if required files are missing and downloads are permitted, it fetches the missing files for the pinned revision. A failure is reported without preventing the server from starting or full-text search from working; semantic/hybrid requests keep their existing error contracts. Preparation leaves the model unloaded; model loading remains lazy when inference is needed. Library hosts decide whether to call `prepareEmbeddings()` themselves; framework creation does not perform preparation automatically.
+
+For deliberate manual preparation, including provisioning an offline deployment, `bun scripts/prepare-model.ts --config path/to/config.json` remains available. The `MODEL_NOT_CACHED` diagnostic explains startup fetching when `embeddings.localFilesOnly` is false and otherwise names that manual command. See [decision 0010](decisions/0010-prepare-the-model-snapshot-at-startup.md). For unusual model architectures, pooling conventions, or external tensor layouts, supply a local compatible export or implement `EmbeddingProvider` and inject it through `createFramework({embeddingProvider})`.
 
 ## OpenAI provider
 

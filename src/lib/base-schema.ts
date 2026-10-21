@@ -1,6 +1,8 @@
 import { Schema } from "effect";
 
-export const IDSchema = Schema.String.annotate({ description: "Object identifier." });
+export const IDSchema = Schema.NonEmptyString.annotate({
+  description: "Object identifier. Must not be empty.",
+});
 export const XIDSchema = IDSchema;
 export const NameSchema = Schema.String.annotate({ description: "Object name." });
 
@@ -14,7 +16,8 @@ export const BaseObjectSchema = Schema.Struct({
   createdAt: Schema.Date.annotate({ description: "Object creation timestamp." }),
   updatedAt: Schema.Date.annotate({ description: "Most recent object update timestamp." }),
   retiredAt: Schema.NullOr(Schema.Date).annotate({
-    description: "Retirement timestamp, or null for an active object.",
+    description:
+      "Retirement timestamp, or null for an active object. A retired object is still listed and searchable; check this field to exclude it.",
   }),
   tags: Schema.Record(Schema.String, Schema.String).annotate({
     description: "String-valued object tags.",

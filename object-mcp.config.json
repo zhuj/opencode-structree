@@ -12,7 +12,7 @@
     "dimensions": 384,
     "dtype": "q8",
     "cacheDir": "./.local/.structree/.cache/models",
-    "localFilesOnly": true,
+    "localFilesOnly": false,
     "queryPrefix": "query: ",
     "documentPrefix": "passage: ",
     "maxTokens": 512,

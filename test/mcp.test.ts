@@ -308,6 +308,31 @@ describe("official MCP adapter", () => {
       }
       const create = tools.find((tool) => tool.name === "project_create")!;
       const schema = create.inputSchema;
+      expect(schema).toHaveProperty(
+        "properties.object.description",
+        "The complete object. Identifiers must not be empty.",
+      );
+      expect(create.description).toContain("Identifiers must not be empty.");
+      const get = tools.find((tool) => tool.name === "project_get")!;
+      const update = tools.find((tool) => tool.name === "project_update")!;
+      const remove = tools.find((tool) => tool.name === "project_delete")!;
+      expect(get.inputSchema).toHaveProperty(
+        "properties.id.description",
+        "Object identifier. Must not be empty.",
+      );
+      expect(update.inputSchema).toHaveProperty(
+        "properties.id.description",
+        "Object identifier. Must not be empty.",
+      );
+      expect(remove.inputSchema).toHaveProperty(
+        "properties.id.description",
+        "Object identifier. Must not be empty.",
+      );
+      expect(update.inputSchema).toHaveProperty(
+        "properties.object.description",
+        "The complete object. Identifiers must not be empty.",
+      );
+      expect(update.description).toContain("Identifiers must not be empty.");
       expect(schema.required).toEqual(["object"]);
       expect(schema.additionalProperties).toBe(false);
       expect(schema).toHaveProperty("properties.body.type", "string");
@@ -356,7 +381,7 @@ describe("official MCP adapter", () => {
       );
       expect(search.inputSchema).toHaveProperty(
         "properties.mode.description",
-        'Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.',
+        'Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; the local ONNX provider fetches its pinned model snapshot at startup when the snapshot is missing and downloads are permitted. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. In hybrid mode a query with no lexical tokens still runs the semantic ranking, and those hits carry no lexical evidence. Valid requests with types: [] return no hits without invoking a provider.',
       );
       expect(search.inputSchema).toHaveProperty(
         "properties.types.items.enum",
@@ -386,7 +411,7 @@ describe("official MCP adapter", () => {
         const search = tools.find((tool) => tool.name === "objects_search")!;
         expect(search.inputSchema).toHaveProperty(
           "properties.query.description",
-          "Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more causes an error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.",
+          "Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more fails with an INTERNAL error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.",
         );
         expect(search.inputSchema).toHaveProperty(
           "properties.types.description",
@@ -394,7 +419,7 @@ describe("official MCP adapter", () => {
         );
         expect(search.inputSchema).toHaveProperty(
           "properties.mode.description",
-          'Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.',
+          'Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; the local ONNX provider fetches its pinned model snapshot at startup when the snapshot is missing and downloads are permitted. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. In hybrid mode a query with no lexical tokens still runs the semantic ranking, and those hits carry no lexical evidence. Valid requests with types: [] return no hits without invoking a provider.',
         );
         expect(search.description).toBe(
           "Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.",
@@ -446,6 +471,9 @@ describe("official MCP adapter", () => {
         );
       }
       const list = tools.find((tool) => tool.name === "project_list")!;
+      expect(list.description).toContain(
+        "A retired object is still listed; check its retiredAt field to exclude it.",
+      );
       expect(list.description).toContain(
         "Set includeBody to false to omit the Markdown body and return only identity, title, path and checksum.",
       );
@@ -702,6 +730,31 @@ describe("official MCP adapter", () => {
       expect(response.isError).toBe(true);
       expect(JSON.stringify(response.content)).toContain("Output validation error");
     }, facade);
+  });
+
+  test("rejects empty identifiers for get, delete, and update arguments", async () => {
+    await connected(async (client) => {
+      const invalidCalls = [
+        { name: "project_get", arguments: { id: "" } },
+        { name: "project_delete", arguments: { id: "", expectedChecksum: "revision" } },
+        {
+          name: "project_update",
+          arguments: {
+            id: "",
+            object: projectJson(),
+            body: "",
+            expectedChecksum: "revision",
+          },
+        },
+      ];
+      for (const call of invalidCalls) {
+        const response = await client.callTool(call);
+        expect(response.isError).toBe(true);
+        const error = JSON.stringify(response.content);
+        expect(error).toContain("Input validation error");
+        expect(error).toContain("id");
+      }
+    });
   });
 
   test("inherits strict mode from framework configuration and supports explicit host overrides", async () => {

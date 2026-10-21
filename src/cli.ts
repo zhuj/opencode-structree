@@ -26,6 +26,13 @@ async function main(): Promise<void> {
     },
     onError: (error) => process.stderr.write(`[object-mcp] ${error.code}: ${error.message}\n`),
   });
+  if (command === "serve" || command === "sync") {
+    try {
+      await framework.prepareEmbeddings();
+    } catch {
+      // The framework already reported the failure; the full-text path still works without the model.
+    }
+  }
   if (command !== "serve") {
     try {
       const output = command === "sync" ? framework.status().lastSync : framework.status();

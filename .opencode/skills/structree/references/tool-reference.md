@@ -22,19 +22,23 @@ and defaults to an empty string.
 
 | Parameter | Type | Notes |
 | --- | --- | --- |
-| `object` | object | The full object: `id`, `name`, `title`, `description`, `createdAt`, `updatedAt`, `retiredAt`, `tags`, `metadata`, `relations`. |
+| `object` | object | The complete object. Identifiers must not be empty. |
 | `body` | string, optional | The Markdown content. |
 
 Returns the stored object, its body, its path and its checksum.
 
 Fails with `ALREADY_EXISTS` when the id is taken, and with `VALIDATION` when a
-field does not match the schema.
+field does not match the schema, including an empty object id, owner identifier
+(for example `relations.project = ""`) or identifier inside a relation array.
+An empty identifier is refused before any target is considered. Relation targets
+are not validated for existence: a non-empty id naming a nonexistent target is
+still stored as written. All base fields and relation keys are required.
 
 ### `<type>_get`
 
 | Parameter | Type | Notes |
 | --- | --- | --- |
-| `id` | string | The object id. |
+| `id` | non-empty string | Object identifier. Must not be empty. |
 
 Returns the object, its body, its path and its checksum. Fails with
 `NOT_FOUND` when there is no such object.
@@ -45,8 +49,8 @@ Replaces a complete revision. This is not a patch.
 
 | Parameter | Type | Notes |
 | --- | --- | --- |
-| `id` | string | The object id. |
-| `object` | object | The complete new object. |
+| `id` | non-empty string | Object identifier. Must not be empty. |
+| `object` | object | The complete object. Identifiers must not be empty. |
 | `body` | string | The complete new Markdown body. |
 | `expectedChecksum` | string | The checksum of the revision being replaced. It must not be empty. |
 
@@ -58,14 +62,16 @@ Replaces a complete revision. This is not a patch.
 
 | Parameter | Type | Notes |
 | --- | --- | --- |
-| `id` | string | The object id. |
+| `id` | non-empty string | Object identifier. Must not be empty. |
 | `expectedChecksum` | string | The latest checksum. It must not be empty. |
 
 Returns `{ type, id, deleted: true }`.
 
 ### `<type>_list`
 
-Lists the objects of that type, in identifier order.
+Lists the objects of that type, in identifier order. A retired object is still
+listed and searchable; check `retiredAt` to exclude it. This publishes existing
+behavior, not a change to listing or search.
 
 | Parameter | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -94,7 +100,7 @@ manageable size.
 
 `query`:
 
-> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more causes an error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
+> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more fails with an INTERNAL error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
 
 `types`:
 
@@ -102,7 +108,18 @@ manageable size.
 
 `mode`:
 
-> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.
+> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; the local ONNX provider fetches its pinned model snapshot at startup when the snapshot is missing and downloads are permitted. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. In hybrid mode a query with no lexical tokens still runs the semantic ranking, and those hits carry no lexical evidence. Valid requests with types: [] return no hits without invoking a provider.
+
+CLI `serve` and `sync` prepare the local ONNX provider; the read-only `status`
+command does not. `embeddings.localFilesOnly` defaults to false and permits
+fetching missing pinned model files. True keeps offline-only behavior and
+reports `MODEL_NOT_CACHED` for a missing snapshot without fetching. Preparation
+needs no network request for a complete snapshot and does not load the model;
+inference still loads it lazily. A reported preparation failure does not stop
+the server or full-text search. Library hosts choose whether to call
+`prepareEmbeddings()`; creation does not prepare automatically. No successful
+preparation or status metadata guarantees inference readiness. Use explicit
+fulltext after provider errors rather than changing configuration yourself.
 
 Returns `{ mode, hits, indexGeneration }`. A hit is `{ type, id, name, title,
 path, checksum, score, fulltextRank, fulltextExcerpt?, semanticDistance, matchedChunk }`, where
@@ -110,6 +127,9 @@ path, checksum, score, fulltextRank, fulltextExcerpt?, semanticDistance, matched
 `matchedChunk` is semantic `{ index, start, end, text }` or null (null for
 fulltext-only hits), and `body` is present
 only when `includeBody` was true.
+
+Hybrid hits for a query with no lexical tokens have `fulltextRank: null` and a
+set `semanticDistance`, with no lexical evidence.
 
 `fulltextExcerpt` is optional string-or-null on the public surface. The concrete
 server always supplies a string for a lexical match, including hybrid with zero
@@ -130,9 +150,12 @@ excerpt without refill; use get for current complete content.
 
 Only a complete successful paginated list can support an absence claim about
 valid objects. Revalidation is not a guarantee against subsequent edits.
-Identical tokens are deduplicated before folding; case variants can count
-separately. More than 128 distinct extracted tokens causes `INTERNAL`, not
-`VALIDATION`. Two words match anywhere rather than as a phrase; `reconcil*`
+Identical tokens are deduplicated before SQLite case and diacritic folding;
+case variants count separately. The 128-token cap is a self-imposed bound on the
+generated FTS5 MATCH expression, not a SQLite limit, and fails rather than
+truncates. On 2026-10-21 SQLite 3.53.4 executed 2000 AND-joined and 5000 OR-joined
+terms without error. See [decision 0011](../../../../docs/decisions/0011-publish-the-observed-surface-and-reject-empty-identifiers.md).
+Two words match anywhere rather than as a phrase; `reconcil*`
 searches `reconcil`, and `cafe` can match `café`. Hybrid's provider can fail
 before lexical evaluation, even when punctuation produces no lexical tokens.
 No semantic/hybrid failure silently falls back to fulltext.
@@ -186,7 +209,7 @@ that was wrong.
 
 | Code | Meaning | What to do |
 | --- | --- | --- |
-| `VALIDATION` / `VALIDATION_ERROR` | The input does not match the schema | Check the field list in `objects_definitions` |
+| `VALIDATION` / `VALIDATION_ERROR` | The input does not match the schema, including an empty object, owner or relation-array identifier | Supply a non-empty identifier; check `objects_definitions` for other field errors |
 | `ALREADY_EXISTS` | The id is taken | `get` it and update it, or choose another id |
 | `NOT_FOUND` | No object with that id | Search for the id instead |
 | `DUPLICATE_ID` | Several objects of that type share one id, so a read of that id cannot resolve which object it means | The error names the id. Report it for operator resolution; the exposed tools cannot repair it |

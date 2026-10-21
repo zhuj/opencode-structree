@@ -11,7 +11,7 @@ import {
   normalizeVector,
   weightedMean,
 } from "./common.ts";
-import { resolveModelDirectory } from "./model-cache.ts";
+import { ensureModelSnapshot, resolveModelDirectory } from "./model-cache.ts";
 
 export type OnnxEmbeddingConfig = Extract<EmbeddingConfig, { provider: "onnx" }>;
 export type OnnxDevice = OnnxEmbeddingConfig["device"];
@@ -145,6 +145,14 @@ class OnnxEmbeddingProvider implements EmbeddingProvider {
       normalize: true,
       device: config.device,
     });
+  }
+
+  /**
+   * Ensures the pinned snapshot exists, so the first query does not have to fetch it.
+   * The model itself stays unloaded: a prepared snapshot costs no memory yet.
+   */
+  async prepare(signal?: AbortSignal): Promise<void> {
+    await ensureModelSnapshot(this.config, signal);
   }
 
   embed(

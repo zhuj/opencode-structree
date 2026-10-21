@@ -350,6 +350,22 @@ export class ObjectFramework implements ObjectFacade {
     return this.synchronization.resync(signal);
   }
 
+  /**
+   * Ensures the embedding provider can serve embeddings, fetching a missing model snapshot when the
+   * configuration permits it. A failure is recorded as the last error and rethrown, so the host can
+   * decide whether to keep serving the full-text path.
+   */
+  async prepareEmbeddings(signal?: AbortSignal): Promise<void> {
+    this.ensureOpen();
+    if (!this.provider) return;
+    try {
+      await this.provider.prepare?.(signal);
+    } catch (error) {
+      this.reportError(error);
+      throw error;
+    }
+  }
+
   private async reconcile(signal: AbortSignal): Promise<SyncReport> {
     const snapshot = await this.commit(
       async () =>

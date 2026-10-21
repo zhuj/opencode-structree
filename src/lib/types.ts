@@ -63,6 +63,8 @@ export interface EmbeddingProvider {
     purpose: "query" | "document",
     signal?: AbortSignal,
   ): Promise<readonly Float32Array[]>;
+  /** Ensures the provider can serve embeddings, fetching a missing snapshot when it may. */
+  prepare?(signal?: AbortSignal): Promise<void>;
   close(): Promise<void>;
 }
 

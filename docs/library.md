@@ -101,6 +101,14 @@ requirements. See [the vault guide](vault.md) and
 
 ## The facade contract
 
+The built-in schemas reject empty object ids, owner identifiers (for example
+`relations.project = ""`) and identifiers inside relation arrays with
+`VALIDATION`. An empty identifier is refused before any target is considered;
+relation targets are not validated for existence, so a non-empty identifier
+naming a nonexistent target is still stored as written. A retired object remains
+listed and searchable; callers check `retiredAt` to exclude it. The retirement
+wording publishes existing behavior, not a change to listing or search.
+
 The facade is the same for the application and for a custom registry, and the
 generated tools advertise the bounds it enforces. The three read paths that a
 client depends on most:
@@ -111,15 +119,34 @@ client depends on most:
 | `search(request, signal?)` | Distinct objects from the derived index. `topN` is an integer from 1 to `config.search.maxTopN` and defaults to `config.search.defaultTopN`. See the exact mode and discovery guidance below. |
 | `status()` | Index and synchronization state, registry, embedding metadata, historical reports and bounded known issues, not a provider-readiness verdict. |
 
+`ObjectFramework` also exposes `prepareEmbeddings(signal?)`. It calls the
+provider's optional `prepare`, or does nothing if no provider or hook exists.
+A failure is recorded as the framework's last error, reported through `onError`,
+and rethrown so the host can choose how to proceed. Framework creation does not
+automatically call preparation or fetch model assets; a library host decides
+whether to call this method. The CLI calls it for `serve` and `sync`, not for
+the read-only `status` report, and keeps serving full-text search after a
+reported preparation failure.
+
+For local ONNX, preparation ensures the pinned snapshot files exist, fetching
+missing files when `embeddings.localFilesOnly` is false (the built-in default).
+A complete snapshot is returned without a network request. True retains
+offline-only operation: a missing snapshot reports `MODEL_NOT_CACHED` without
+fetching. Preparation does not load the model; inference loads it lazily when
+needed. Snapshot presence is not proof that later inference will succeed, and
+the existing semantic/hybrid errors and explicit fulltext behavior are unchanged.
+See [embedding semantics](embeddings.md#local-onnx) and
+[decision 0010](decisions/0010-prepare-the-model-snapshot-at-startup.md).
+
 The generated tools publish this search and mode guidance verbatim:
 
 > Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
 
-> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.
+> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; the local ONNX provider fetches its pinned model snapshot at startup when the snapshot is missing and downloads are permitted. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. In hybrid mode a query with no lexical tokens still runs the semantic ranking, and those hits carry no lexical evidence. Valid requests with types: [] return no hits without invoking a provider.
 
 The query and type-filter descriptions are:
 
-> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more causes an error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
+> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more fails with an INTERNAL error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
 
 > Restrict both lexical and semantic candidates to these registered types before ranking limits. Omit for all types; [] searches none. Type and directory names are not added to searchable text. Use the type's list tool to enumerate objects without a content query.
 
@@ -133,6 +160,15 @@ not `VALIDATION`. A successful, fully paginated source listing enumerates valid
 objects; incomplete or failed listing cannot establish absence. Revalidation
 does not guarantee against subsequent source edits. Resync is a write, not a
 prerequisite for read-only investigation.
+
+The 128-distinct-token cap is a self-imposed bound on the generated FTS5 MATCH
+expression, not a SQLite limit. It fails rather than truncates, so callers
+shorten their own over-limit queries. Tokens are counted before SQLite case and
+diacritic folding; case variants count separately. On 2026-10-21 SQLite 3.53.4
+executed 2000 AND-joined and 5000 OR-joined terms without error. See
+[decision 0011](decisions/0011-publish-the-observed-surface-and-reject-empty-identifiers.md).
+Hybrid queries with no lexical tokens still return semantic-ranked hits with
+`fulltextRank: null` and a set `semanticDistance`, without lexical evidence.
 
 Two further details of that contract are visible to the client:
 

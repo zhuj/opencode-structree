@@ -19,12 +19,13 @@ Requirements: Bun **1.4.3 or later** and a platform supported by the native SQLi
 ```sh
 ONNXRUNTIME_NODE_INSTALL=skip bun install --frozen-lockfile
 bun run check
-bun run prepare-model
 bun run seed-example
 bun start
 ```
 
-`ONNXRUNTIME_NODE_INSTALL=skip` skips the optional ONNX GPU download; the CPU runtime is bundled in the dependency. `embeddings.device` selects the execution provider: `cpu` is the default and always available, while `cuda` needs the CUDA 12 runtime libraries present for the installed onnxruntime-node build. `prepare-model` explicitly downloads the pinned multilingual E5 q8 model, verifies its file hashes, and runs a synthetic inference check. Normal server operation then uses the local snapshot. `seed-example` creates one example of each entity; existing example IDs are left intact.
+`ONNXRUNTIME_NODE_INSTALL=skip` skips the optional ONNX GPU download; the CPU runtime is bundled in the dependency. `embeddings.device` selects the execution provider: `cpu` is the default and always available, while `cuda` needs the CUDA 12 runtime libraries present for the installed onnxruntime-node build. The CLI prepares the local ONNX provider for `serve` and `sync`: with the built-in `embeddings.localFilesOnly: false` default, a missing pinned snapshot is fetched at startup. A complete snapshot is reused by preparation without a network request. Preparation fetches files, not a loaded model; inference still loads the model lazily when needed. `seed-example` creates one example of each entity; existing example IDs are left intact.
+
+Set `embeddings.localFilesOnly: true` to retain offline-only operation: a missing snapshot reports `MODEL_NOT_CACHED` without fetching anything. The diagnostic explains startup fetching when the switch is false and otherwise names `bun scripts/prepare-model.ts --config <your-config.json>` for manual preparation. The optional `bun run prepare-model` command downloads and verifies the pinned assets and runs a synthetic inference check; it is not a prerequisite for normal startup. A preparation failure is reported but does not stop the server: full-text search remains available, while semantic/hybrid requests retain their existing provider-error behavior. See [embedding preparation and errors](docs/embeddings.md#local-onnx) and [decision 0010](docs/decisions/0010-prepare-the-model-snapshot-at-startup.md).
 
 `seed-example` writes those twelve examples into the configured source root, which is `.local/.structree/objects` inside this repository for the included configuration. That directory sits under the ignored `.local/` path, so the seeded objects are authoritative source data that stays out of `git status`. They remain ordinary source files on disk: the framework reads, updates, and deletes them like any other object.
 
@@ -61,7 +62,7 @@ bun src/cli.ts sync --config object-mcp.config.json
 bun src/cli.ts status --config object-mcp.config.json
 ```
 
-Both commands perform startup reconciliation. They print JSON and exit with code `2` when the reconciliation reports source or embedding issues. They never rewrite source files. The `status` command prints the same report as the `objects_status` tool, and the `sync` command prints the last synchronization report; both bound their issue list to 50 entries and add the totals and the per-code counts described under [the tools](#the-12-schemas-and-their-tools).
+Both commands perform startup reconciliation. Only `sync` calls `prepareEmbeddings()`; `status` does not prepare the provider, because it is a read-only report. They print JSON and exit with code `2` when the reconciliation reports source or embedding issues. They never rewrite source files. The `status` command prints the same report as the `objects_status` tool, and the `sync` command prints the last synchronization report; both bound their issue list to 50 entries and add the totals and the per-code counts described under [the tools](#the-12-schemas-and-their-tools).
 
 ## Build and OpenCode V2
 
@@ -113,7 +114,7 @@ embeddings:
   dimensions: 768
 ```
 
-`revision` must pin the same export as `model`; a local model directory replaces both. The snapshot for the selected export still has to be prepared, and the model identity participates in the cache fingerprint, so changing it invalidates the cached vectors of the affected objects. Because this file is ignored by Git, a literal `embeddings.apiKey` belongs here and not in a tracked configuration file.
+`revision` must pin the same export as `model`; a local model directory replaces both. The CLI prepares the selected snapshot at startup for `serve` and `sync`, fetching missing files when `embeddings.localFilesOnly` is false (the built-in default). Set it to true to refuse downloads and require a pre-existing snapshot. The model identity participates in the cache fingerprint, so changing it invalidates the cached vectors of the affected objects. Because this file is ignored by Git, a literal `embeddings.apiKey` belongs here and not in a tracked configuration file.
 
 ## Registry and plugin integration
 
@@ -187,6 +188,7 @@ Both registration functions inherit `objects.config.mcp`. An optional third argu
 | `list(type, {limit?, offset?}, signal?)` | Read valid filesystem objects in ID order; default limit 50, maximum 1,000. |
 | `search(request, signal?)` | Retrieve distinct objects from the synchronized index; `topN` is capped by the configured `search.maxTopN`. |
 | `resync(signal?)` | Wait for shared reconciliation and report every issue. |
+| `prepareEmbeddings(signal?)` | Explicitly call the provider's optional `prepare`; record a failure as the last error and rethrow it. Embedding library hosts decide whether to call it; framework creation does not prepare automatically. |
 | `requestResync()` | Schedule a coalesced background reconciliation. |
 | `status()` | Report index and synchronization state, embedding metadata, pending work, and bounded known issues with totals and per-code counts, without testing provider readiness. |
 | `onEvent(listener)` | Subscribe to tool mutations, filesystem notifications, and completed sync reports. Returns an unsubscribe function. |
@@ -227,7 +229,7 @@ Its issue list is bounded to the first 50 entries and carries `issuesTotal`, `is
 
 The domain schemas preserve all required fields from the supplied specification. Nullable fields require explicit `null`; canonical objects include every required array and nested commitment struct. `Feature` has no `partOf`; there is no `belongsTo` or separate `Acceptance` entity. See [the field and relationship reference](docs/core-schemas.md).
 
-Schema validation checks shape. It does not check reference existence, inverse relationships, duplicate reference IDs, or dependency/hierarchy cycles. The filesystem layer separately needs one unambiguous `(type,id)` to address a stored object. Conflicting files with the same identity are reported and excluded from indexing; identical ID strings in different registered types are allowed.
+Schema validation checks shape and refuses empty identifiers with `VALIDATION` before any target is considered: an empty object id, owner identifier such as `relations.project = ""`, or identifier inside a relation array is invalid. A non-empty identifier naming a nonexistent target is still stored as written. Validation does not check reference existence, inverse relationships, duplicate reference IDs, or dependency/hierarchy cycles. The filesystem layer separately needs one unambiguous `(type,id)` to address a stored object. Conflicting files with the same identity are reported and excluded from indexing; identical ID strings in different registered types are allowed.
 
 ## Using structree from an agent
 
@@ -265,9 +267,9 @@ relations:
 Long-form content belongs here.
 ```
 
-All timestamps are caller-supplied. An update is a full replacement, including its body; it is not a deep partial patch. The framework keeps `id` and `createdAt` immutable and requires the current checksum on update/delete. Set `retiredAt` explicitly when retirement is desired; delete performs an actual file deletion.
+All timestamps are caller-supplied. An update is a full replacement, including its body; it is not a deep partial patch. The framework keeps `id` and `createdAt` immutable and requires the current checksum on update/delete. Set `retiredAt` explicitly when retirement is desired; delete performs an actual file deletion. A retired object remains listed and searchable; callers exclude it by checking `retiredAt`. This publishes existing listing and search behavior, not a behavior change.
 
-Framework-created filenames use a SHA-256 hash of the JSON-encoded ID. This permits unrestricted string IDs without turning them into paths. Human-created `.md` filenames and subdirectories are supported; an external rename updates the indexed path without recomputing unchanged vectors. Changing an object's `name` does not rename its file.
+Framework-created filenames use a SHA-256 hash of the JSON-encoded ID. This permits non-empty string IDs without turning them into paths. Human-created `.md` filenames and subdirectories are supported; an external rename updates the indexed path without recomputing unchanged vectors. Changing an object's `name` does not rename its file.
 
 Creating a new ID requires its type directory to have no invalid or conflicting source files, so the store can establish that the identity is unused. Existing valid objects can still be read, updated, or deleted while other files are being repaired.
 
@@ -299,17 +301,19 @@ Example `objects_search` arguments:
 
 The tool's exact query, type-filter and mode descriptions are:
 
-> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more causes an error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
+> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more fails with an INTERNAL error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
 
 > Restrict both lexical and semantic candidates to these registered types before ranking limits. Omit for all types; [] searches none. Type and directory names are not added to searchable text. Use the type's list tool to enumerate objects without a content query.
 
-> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.
+> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; the local ONNX provider fetches its pinned model snapshot at startup when the snapshot is missing and downloads are permitted. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. In hybrid mode a query with no lexical tokens still runs the semantic ranking, and those hits carry no lexical evidence. Valid requests with types: [] return no hits without invoking a provider.
 
 The search tool itself states:
 
 > Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
 
 Identical extracted strings are deduplicated before folding; case variants can count separately against the 128-token limit. Overflow currently surfaces as `INTERNAL`, not `VALIDATION`. Two words can match anywhere, not necessarily as a phrase. `reconcil*` searches the token `reconcil`, and `cafe` matches `café`. Hybrid still invokes its provider before lexical evaluation. A provider failure keeps the `EMBEDDINGS_UNAVAILABLE` code and its cause, and its message ends with `Search with mode "fulltext" to query without embeddings.` Embedding failures during indexing leave full-text search available and mark affected objects pending. A configured provider or a snapshot's presence does not guarantee lazy model loading succeeds.
+
+The 128-token cap bounds the generated FTS5 MATCH expression; it is self-imposed, not a SQLite limit, and fails rather than truncates. Shorten an over-limit query yourself. On 2026-10-21 SQLite 3.53.4 executed 2000 AND-joined and 5000 OR-joined terms without error. See [decision 0011](docs/decisions/0011-publish-the-observed-surface-and-reject-empty-identifiers.md). Hybrid hits from a query with no lexical tokens have `fulltextRank: null` and a set `semanticDistance`.
 
 The `types` parameter is published as an enum of the registered type names, so an unknown name is rejected by input validation with the full list in the message, before the call reaches the framework. A name that reaches the framework anyway fails with the `UNKNOWN_TYPE` code and carries `registeredTypes`, the sorted registered type names, in its error details. Multiple chunks never consume multiple positions in the final object result. Only a complete successful paginated source listing can support an absence claim about valid objects; search revalidation is not a guarantee against subsequent edits.
 

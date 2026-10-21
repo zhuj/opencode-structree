@@ -109,7 +109,7 @@ const onnxDefaults: Extract<EmbeddingConfig, { provider: "onnx" }> = {
   dtype: "q8",
   device: "cpu",
   cacheDir: `${LOCAL_STATE_RELATIVE_DIRECTORY}/.cache/models`,
-  localFilesOnly: true,
+  localFilesOnly: false,
   queryPrefix: "query: ",
   documentPrefix: "passage: ",
   maxTokens: 512,
