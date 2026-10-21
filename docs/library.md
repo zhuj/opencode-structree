@@ -101,11 +101,37 @@ requirements. See [the vault guide](vault.md) and
 
 ## The facade contract
 
-The built-in schemas reject empty object ids, owner identifiers (for example
-`relations.project = ""`) and identifiers inside relation arrays with
-`VALIDATION`. An empty identifier is refused before any target is considered;
-relation targets are not validated for existence, so a non-empty identifier
-naming a nonexistent target is still stored as written. A retired object remains
+Framework creation starts the watcher and first reconciliation. By default it
+waits for that pass before returning, preserving the library contract. Set
+`waitForStartup: false` to return while the pass runs; `waitForStartup()` still
+resolves with its report or rejects with its failure. A deferred startup failure
+is reported through the framework's error channel without stopping the server.
+
+The CLI's MCP server selects this deferral and answers requests without waiting
+for the first pass. The diagnostic `sync` and `status` commands still wait, so
+their printed reports describe a completed pass. During the initial pass,
+`objects_status` reports `syncing: true` and `lastSync: null` until a completed
+report exists. A search issued in that window may find nothing because existing
+files have not yet been indexed. Create indexes its own object immediately, so
+create followed by search still works. Reconciliation is the repair path, not a
+read-only call; filename corrections can happen in the background after the
+server starts answering. See [decision 0015](decisions/0015-defer-the-startup-reconciliation.md).
+
+The built-in schemas enforce the [portable stored-id domain](core-schemas.md#shared-fields)
+with `VALIDATION`. A caller may send an id in any case: at the very start of
+create, get, update and delete, the framework lowercases the object id and every
+relation identifier below the tool boundary, then validates the lowercased form.
+Relation targets are not validated for existence, so a valid identifier naming
+a nonexistent target is stored after normalization. Created objects use
+`<type directory>/<id>.md`; reconciliation corrects a differing base name in its
+existing directory and updates the indexed path. A filesystem that folds case or
+normalizes names may spell the name differently while the target still names the
+same file. The scanner accepts that spelling, leaves the file unchanged and
+indexed at its actual path, and reports no issue. Only a different file holding
+the target name is a conflict: both files remain unchanged and the object is
+excluded with `RENAME_CONFLICT`. Nothing is overwritten.
+Resync can therefore rename source files, not only write derived state.
+A retired object remains
 listed and searchable; callers check `retiredAt` to exclude it. The retirement
 wording publishes existing behavior, not a change to listing or search.
 
@@ -140,7 +166,7 @@ See [embedding semantics](embeddings.md#local-onnx) and
 
 The generated tools publish this search and mode guidance verbatim:
 
-> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
+> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
 
 > Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; the local ONNX provider fetches its pinned model snapshot at startup when the snapshot is missing and downloads are permitted. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. In hybrid mode a query with no lexical tokens still runs the semantic ranking, and those hits carry no lexical evidence. Valid requests with types: [] return no hits without invoking a provider.
 

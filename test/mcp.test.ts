@@ -4,6 +4,7 @@ import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import { Schema } from "effect";
 import { defineConfig } from "../src/lib/config.ts";
 import { FrameworkError } from "../src/lib/errors";
+import { objectKey } from "../src/lib/filesystem.ts";
 import {
   createMcpServer,
   effectMcpSchema,
@@ -56,7 +57,7 @@ class MemoryFacade implements ObjectFacade {
     await this.beforeCreate?.(value);
     this.createdWithDate = (value as { createdAt: unknown }).createdAt instanceof Date;
     const object = this.registry.decode(type, value);
-    const key = JSON.stringify([type, object.id]);
+    const key = objectKey(type, object.id);
     if (this.objects.has(key))
       throw new FrameworkError("CONFLICT", "The object already exists.", { id: object.id });
     const stored = {
@@ -73,7 +74,7 @@ class MemoryFacade implements ObjectFacade {
   async get(type: string, id: string, signal?: AbortSignal): Promise<StoredObject> {
     this.lastSignal = signal;
     await this.beforeGet?.(signal);
-    const stored = this.objects.get(JSON.stringify([type, id]));
+    const stored = this.objects.get(objectKey(type, id));
     if (!stored) throw new FrameworkError("NOT_FOUND", "The object does not exist.", { type, id });
     return stored;
   }
@@ -91,7 +92,7 @@ class MemoryFacade implements ObjectFacade {
       throw new FrameworkError("CHECKSUM_CONFLICT", "The file has changed.");
     const object = this.registry.decode(type, value);
     const stored = { ...old, object, body, checksum: `revision-${++this.revision}` };
-    this.objects.set(JSON.stringify([type, id]), stored);
+    this.objects.set(objectKey(type, id), stored);
     return stored;
   }
 
@@ -104,7 +105,7 @@ class MemoryFacade implements ObjectFacade {
     const old = await this.get(type, id, signal);
     if (old.checksum !== expectedChecksum)
       throw new FrameworkError("CHECKSUM_CONFLICT", "The file has changed.");
-    this.objects.delete(JSON.stringify([type, id]));
+    this.objects.delete(objectKey(type, id));
     return { type, id, deleted: true };
   }
 
@@ -310,29 +311,33 @@ describe("official MCP adapter", () => {
       const schema = create.inputSchema;
       expect(schema).toHaveProperty(
         "properties.object.description",
-        "The complete object. Identifiers must not be empty.",
+        "The complete object. Identifiers are lowercased and must be portable file names.",
       );
-      expect(create.description).toContain("Identifiers must not be empty.");
+      expect(create.description).toContain(
+        "Identifiers are lowercased and must be portable file names.",
+      );
       const get = tools.find((tool) => tool.name === "project_get")!;
       const update = tools.find((tool) => tool.name === "project_update")!;
       const remove = tools.find((tool) => tool.name === "project_delete")!;
       expect(get.inputSchema).toHaveProperty(
         "properties.id.description",
-        "Object identifier. Must not be empty.",
+        "Object identifier. Must be a portable file name of at most 200 UTF-8 bytes.",
       );
       expect(update.inputSchema).toHaveProperty(
         "properties.id.description",
-        "Object identifier. Must not be empty.",
+        "Object identifier. Must be a portable file name of at most 200 UTF-8 bytes.",
       );
       expect(remove.inputSchema).toHaveProperty(
         "properties.id.description",
-        "Object identifier. Must not be empty.",
+        "Object identifier. Must be a portable file name of at most 200 UTF-8 bytes.",
       );
       expect(update.inputSchema).toHaveProperty(
         "properties.object.description",
-        "The complete object. Identifiers must not be empty.",
+        "The complete object. Identifiers are lowercased and must be portable file names.",
       );
-      expect(update.description).toContain("Identifiers must not be empty.");
+      expect(update.description).toContain(
+        "Identifiers are lowercased and must be portable file names.",
+      );
       expect(schema.required).toEqual(["object"]);
       expect(schema.additionalProperties).toBe(false);
       expect(schema).toHaveProperty("properties.body.type", "string");
@@ -422,7 +427,7 @@ describe("official MCP adapter", () => {
           'Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; the local ONNX provider fetches its pinned model snapshot at startup when the snapshot is missing and downloads are permitted. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. In hybrid mode a query with no lexical tokens still runs the semantic ranking, and those hits carry no lexical evidence. Valid requests with types: [] return no hits without invoking a provider.',
         );
         expect(search.description).toBe(
-          "Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.",
+          "Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.",
         );
         expect(tools.find((tool) => tool.name === "objects_status")?.description).toBe(
           "Show index and synchronization state, embedding configuration/identity, last reports, and bounded known issues with totals, truncation and per-code counts. This call neither checks model files nor runs inference. Provider metadata, zero pending embeddings and dirty: false do not prove future inference success or complete discovery. objects_resync writes derived state and returns the full issue list.",
@@ -439,7 +444,7 @@ describe("official MCP adapter", () => {
       const guidance = (all.structuredContent as { guidance: string[] }).guidance;
       expect(guidance).toHaveLength(7);
       expect(guidance[0]).toBe(
-        "Object ids are stable, unique within their type, and are the only handle: the file name is a hash of the id.",
+        "Object ids are stable, unique within their type, and are the only handle: the file name is the id, an id is always lowercase, and the scanner renames a file whose name does not match its id.",
       );
       expect(guidance[6]).toBe(
         "Search is not exhaustive: it is capped by topN and can miss a stale hit, so confirm a known id with get.",

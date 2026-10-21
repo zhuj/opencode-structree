@@ -1,8 +1,49 @@
 import { Schema } from "effect";
 
-export const IDSchema = Schema.NonEmptyString.annotate({
-  description: "Object identifier. Must not be empty.",
+/** The stored filename domain shared by normalized creation and filesystem discovery. */
+export function isValidId(id: string): boolean {
+  for (const character of id) {
+    const unit = character.charCodeAt(0);
+    if (
+      unit < 0x20 ||
+      unit === 0x7f ||
+      (character.length === 1 && unit >= 0xd800 && unit <= 0xdfff)
+    )
+      return false;
+  }
+  return (
+    id.trim().length > 0 &&
+    id === id.toLowerCase() &&
+    !id.includes("/") &&
+    !id.includes("\\") &&
+    id !== "." &&
+    id !== ".." &&
+    !id.startsWith(".") &&
+    !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/.test(id) &&
+    Buffer.byteLength(id, "utf8") <= 200
+  );
+}
+
+export function isValidInputId(id: string): boolean {
+  return isValidId(id.toLowerCase());
+}
+
+const idFilter = Schema.makeFilter(isValidInputId, {
+  message:
+    "After lowercasing, the id must be a nonblank portable file name: no path separator, leading dot, control character or unpaired surrogate, not a reserved device name, and at most 200 UTF-8 bytes.",
 });
+
+/**
+ * An identifier schema carries the domain filter and the description in one place. The
+ * description is attached before the filter, because a schema that is annotated after it
+ * publishes neither the description nor the length bound in its JSON Schema.
+ */
+export const idSchema = (description: string): typeof Schema.NonEmptyString =>
+  Schema.NonEmptyString.annotate({ description }).check(idFilter);
+
+export const IDSchema = idSchema(
+  "The id is lowercased and must be a nonblank portable file name: no path separator, leading dot, control character or unpaired surrogate, not a reserved device name, and at most 200 UTF-8 bytes.",
+);
 export const XIDSchema = IDSchema;
 export const NameSchema = Schema.String.annotate({ description: "Object name." });
 

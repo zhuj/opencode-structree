@@ -20,7 +20,7 @@ const relationships: Record<string, Record<string, unknown>> = {
 
 function object(type: string): Record<string, unknown> {
   return {
-    id: `${type}/arbitrary identifier`,
+    id: `${type}-arbitrary-identifier`,
     name: "",
     title: "Title",
     description: "Description",
@@ -60,12 +60,14 @@ describe("the twelve core Effect schemas", () => {
     }
   });
 
-  test("reject empty identifiers without validating relation targets or relationship integrity", () => {
+  test("reject invalid identifiers without validating relation targets or relationship integrity", () => {
     const feature = {
       ...object("feature"),
       relations: { project: "unregistered project", commitment: { goals: ["same", "same"] } },
     };
     expect(() => Schema.decodeUnknownSync(FeatureSchema)({ ...feature, id: "" })).toThrow();
+    expect(() => Schema.decodeUnknownSync(FeatureSchema)({ ...feature, id: "a/b" })).toThrow();
+    expect(() => Schema.decodeUnknownSync(FeatureSchema)({ ...feature, id: "Con" })).toThrow();
     expect(() =>
       Schema.decodeUnknownSync(FeatureSchema)({
         ...feature,
@@ -152,7 +154,7 @@ describe("registry wire and persistence boundaries", () => {
     }
     expect(schema).toHaveProperty(
       "properties.id.description",
-      "Object identifier. Must not be empty.",
+      "The id is lowercased and must be a nonblank portable file name: no path separator, leading dot, control character or unpaired surrogate, not a reserved device name, and at most 200 UTF-8 bytes.",
     );
     for (const [type, relation] of [
       ["project_goal", "project"],
@@ -177,7 +179,7 @@ describe("registry wire and persistence boundaries", () => {
     expect(schema).toHaveProperty("properties.relations.required", ["project", "commitment"]);
     expect(schema).toHaveProperty(
       "properties.relations.properties.project.description",
-      "Required owning project identifier. Must not be empty.",
+      "Required owning project identifier. Must be a portable file name of at most 200 UTF-8 bytes.",
     );
     expect(schema).toHaveProperty("properties.relations.properties.commitment.required", ["goals"]);
     expect(schema).toHaveProperty(

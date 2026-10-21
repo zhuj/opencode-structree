@@ -409,6 +409,19 @@ describe("OpenAI-compatible request body compatibility", () => {
 });
 
 describe("ONNX provider identity and lazy initialization", () => {
+  test("the model cache location does not affect the embedding fingerprint", async () => {
+    const first = await createOnnxEmbeddingProvider(onnxConfig);
+    const second = await createOnnxEmbeddingProvider({
+      ...onnxConfig,
+      cacheDir: path.join(onnxConfig.cacheDir, "other-cache"),
+    });
+    try {
+      expect(second.fingerprint).toBe(first.fingerprint);
+    } finally {
+      await Promise.all([first.close(), second.close()]);
+    }
+  });
+
   test("disabled and unused pinned remote providers do not load a model", async () => {
     expect(await createEmbeddingProvider({ provider: "disabled" })).toBeUndefined();
     const provider = await createOnnxEmbeddingProvider(onnxConfig);

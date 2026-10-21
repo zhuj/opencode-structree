@@ -1,6 +1,6 @@
 # Core schemas
 
-This implementation follows the supplied schema specification dated **2026-10-15**. There are 12 concrete registrations; `BaseObjectSchema` is shared structure rather than an entity. Exported identifier schemas validate non-empty strings, not runtime foreign keys or branded classes.
+This implementation follows the supplied schema specification dated **2026-10-15**. There are 12 concrete registrations; `BaseObjectSchema` is shared structure rather than an entity. Exported identifier schemas validate the portable stored-id domain, not runtime foreign keys or branded classes. Caller-supplied ids may use any case and are lowercased before validation.
 
 ## Shared fields
 
@@ -14,9 +14,23 @@ This implementation follows the supplied schema specification dated **2026-10-15
 
 The persistence/MCP codec encodes dates as ISO strings and applies JSON representability rules at the boundary. Each concrete schema spreads `...BaseObjectSchema.fields` and adds a required `relations` struct. All fields below are relative to `relations`, and all keys are required. `?` below means a required nullable value, not an omitted key.
 
-The base `id` description is:
+A caller may send an id in any case: it is lowercased first, and the lowercased form is checked against the domain. An id is refused only if that form breaks a rule, for example a path separator, a leading dot, a reserved device name in any case, or more than 200 UTF-8 bytes after lowercasing. The stored id MUST satisfy all of these:
 
-> Object identifier. Must not be empty.
+1. It is not empty and not entirely whitespace.
+2. It equals its own lowercase form.
+3. It contains no `/` and no `\`.
+4. It is neither `.` nor `..`.
+5. It does not start with `.`.
+6. It contains no character below U+0020 and none equal to U+007F.
+7. It contains no unpaired UTF-16 surrogate.
+8. It is not a Windows reserved device name: `con`, `prn`, `aux`, `nul`, `com1` through `com9`, or `lpt1` through `lpt9`.
+9. Its UTF-8 encoding is at most 200 bytes.
+
+At the very start of create, get, update and delete, the framework lowercases the object id and every relation identifier. This happens below the tool boundary, so tools and library calls agree: creating `MyThing` stores `mything`, and getting `MyThing` finds it. Two ids differing only in case are one id; the second create fails with `ALREADY_EXISTS` on every filesystem.
+
+An id read from a file is checked as written. A hand-written file whose frontmatter id is not lowercase is an invalid object reported as a scan issue, not normalized. The framework normalizes what it writes but reports what a human wrote rather than rewriting authoritative file content.
+
+A created object is stored at `<type directory>/<id>.md`. The scanner corrects a differing base name to `<id>.md` in the file's existing directory and updates the indexed path, because the content is the source of truth. A filesystem that folds case or normalizes names may spell the name differently while the target still names the same file. The scanner accepts that spelling, leaves the file unchanged and indexed at its actual path, and reports no issue. It never overwrites: only a different file holding the target name is a conflict, leaving both files unchanged and excluding the object with `RENAME_CONFLICT`. Subdirectories remain supported; a resync can rename files. See [decision 0013](decisions/0013-name-the-file-after-the-id.md).
 
 The `retiredAt` description is:
 
@@ -41,7 +55,7 @@ The retirement wording publishes existing listing and search behavior, not a beh
 | `ScenarioTest` | `partOf: ScenarioTestID \| null`; `dependsOn: ScenarioTestID[]`; `relatesTo: AcceptanceTestID[]`; `commitsTo: InterfaceID[]` |
 | `AcceptanceTest` | `partOf: AcceptanceTestID \| null`; `dependsOn: AcceptanceTestID[]`; `commitsTo: ScenarioAcceptanceCriteriaID[]` |
 
-Empty arrays and explicit nullable parents are valid, but an empty object id, owner identifier such as `relations.project = ""`, or identifier inside a relation array is rejected with `VALIDATION`. Required owner IDs do not imply target existence, inverse consistency, or hierarchy/dependency cycle validation. The shape schemas allow repeated IDs within arrays. Cross-object validation can be added at an application boundary if a host needs it.
+Empty arrays and explicit nullable parents are valid, but caller-supplied object ids, owner identifiers such as `relations.project`, and identifiers inside relation arrays are lowercased first and must then satisfy the stored-id domain above or fail with `VALIDATION`. Required owner IDs do not imply target existence, inverse consistency, or hierarchy/dependency cycle validation. The shape schemas allow repeated IDs within arrays. Cross-object validation can be added at an application boundary if a host needs it.
 
 ## The tool surface
 
@@ -49,8 +63,8 @@ Empty arrays and explicit nullable parents are valid, but an empty object id, ow
 
 Three properties of these schemas are part of the published surface and not only of this document:
 
-- The id is the stable handle. It is unique within its type, and the file name is a hash of the id, so an id is never a path.
-- Relation targets are not validated. An empty identifier is refused before any target is considered; a non-empty required owner ID may name a target that does not exist yet and is stored as written.
+- Object ids are stable, unique within their type, and are the only handle: the file name is the id, an id is always lowercase, and the scanner renames a file whose name does not match its id.
+- Relation targets are not validated. An invalid identifier is refused before any target is considered; a valid required owner ID may name a target that does not exist yet and is stored after lowercasing.
 - The type names are published as an enum in the search tool's `types` parameter, so an unknown name is rejected by input validation with the full list in the message. A name that reaches the framework anyway fails with `UNKNOWN_TYPE`, and the error details carry `registeredTypes`, the sorted registered type names.
 
 ### Search and status guidance
@@ -72,7 +86,7 @@ the optional lexical evidence field described below.
 
 `objects_search`:
 
-> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
+> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
 
 `objects_status`:
 

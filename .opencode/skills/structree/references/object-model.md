@@ -5,7 +5,7 @@ the schema, including the ones that are empty.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `id` | non-empty string | The stable handle. Unique within the type, and the target of every relation. An id is never renamed. |
+| `id` | lowercase portable filename string when stored | The stable handle, subject to the domain below. Unique within the type, and the target of every relation. An id is never renamed. The file base name is `<id>.md`, subject to filesystem spelling as described below. |
 | `name` | string | A short machine-ish name, often the same as the id suffix. |
 | `title` | string | The human-readable title. |
 | `description` | string | One line. The detail belongs in the body. |
@@ -19,6 +19,28 @@ the schema, including the ones that are empty.
 The body is the Markdown content of the object. It is separate from
 `description`, and it is what full-text search matches against.
 
+A filesystem that folds case or normalizes names may spell the name differently
+while the target still names the same file. The scanner accepts that spelling,
+leaves the file unchanged and indexed at its actual path, and reports no issue.
+Only a different file holding the target name is a conflict: both files remain
+unchanged and the object is excluded with `RENAME_CONFLICT`. Nothing is overwritten.
+See [the scanner rules](../SKILL.md#rules-that-keep-the-vault-consistent).
+
+Callers may send an id in any case; the framework lowercases it first and checks
+the lowercased form against the stored-id domain. The stored id must be non-empty
+and not entirely whitespace, equal to its lowercase form, contain neither `/`
+nor `\`, be neither `.` nor `..`, and not start with
+`.`. It contains no character below U+0020 or equal to U+007F and no unpaired
+UTF-16 surrogate. It must not be a Windows reserved device name (`con`, `prn`,
+`aux`, `nul`, `com1` through `com9`, or `lpt1` through `lpt9`), and its UTF-8
+encoding is at most 200 bytes. The framework's normalization and scanner naming
+rules are in [the consistency rules](../SKILL.md#rules-that-keep-the-vault-consistent).
+
+An id read from a file is checked as written. A hand-written file whose
+frontmatter id is not lowercase is an invalid object reported as a scan issue,
+not normalized. The framework normalizes what it writes but reports what a human
+wrote rather than rewriting authoritative file content.
+
 ## Relation shapes
 
 Two shapes appear in the relations, and they are easy to get wrong:
@@ -31,11 +53,12 @@ Two shapes appear in the relations, and they are easy to get wrong:
   `feature.commitment` is `{ "goals": [...] }`, `scenario.commitment` is
   `{ "features": [...] }`, and `adr.commitment` is `{ "scenarios": [...] }`.
 
-Relation targets are not validated by the server. An empty identifier is refused
-before any target is considered: an empty object id, owner identifier such as
-`relations.project = ""`, or identifier inside a relation array fails with
-`VALIDATION`. A non-empty id naming a target that does not exist is stored as
-written, and nothing warns you later. Empty arrays and nullable parents remain
+Relation targets are not validated by the server. Object ids, owner identifiers
+such as `relations.project`, and identifiers inside relation arrays are lowercased
+first and must then satisfy the stored-id domain above or fail with `VALIDATION`
+before any target is considered. A valid id naming a target that does not exist
+is stored after normalization, and nothing
+warns you later. Empty arrays and nullable parents remain
 valid. The retirement wording above publishes existing listing and search
 behavior, not a behavior change.
 

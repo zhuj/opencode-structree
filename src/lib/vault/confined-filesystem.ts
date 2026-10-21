@@ -41,6 +41,8 @@ export interface WriteExpectation {
   readonly expectedChecksum: string | null;
 }
 
+export type BasenameRenameResult = "renamed" | "equivalent";
+
 export class ConfinedFilesystem {
   readonly maxFileBytes: number;
   private directoryRoot: ConfinedDirectory | undefined;
@@ -361,6 +363,46 @@ export class ConfinedFilesystem {
     } finally {
       await stage.cleanup();
     }
+  }
+
+  /** Link publication is exclusive, unlike rename(), which can overwrite a destination. */
+  async renameBasename(
+    relative: string,
+    basename: string,
+    expectedChecksum: string,
+    signal?: AbortSignal,
+  ): Promise<BasenameRenameResult> {
+    if (pathComponents(basename).length !== 1)
+      throw new FrameworkError("PATH", "A rename must stay in the same directory.");
+    return this.mutate(() =>
+      this.parent<BasenameRenameResult>(relative, false, async (parent, name) => {
+        const current = await this.readFrom(parent, name, relative, signal);
+        if (checksum(current.bytes) !== expectedChecksum)
+          throw new FrameworkError(
+            "CHECKSUM_CONFLICT",
+            "The vault file changed since it was read.",
+          );
+        signal?.throwIfAborted();
+        await parent.verify();
+        try {
+          const target = await fs.lstat(parent.child(basename));
+          const source = await fs.lstat(parent.child(name));
+          if (source.isFile() && target.isFile() && sameIdentity(source, target))
+            return "equivalent";
+        } catch (error) {
+          if (errorCode(error) !== "ENOENT") throw error;
+        }
+        await fs.link(parent.child(name), parent.child(basename));
+        try {
+          await fs.unlink(parent.child(name));
+        } catch (error) {
+          await fs.unlink(parent.child(basename));
+          throw error;
+        }
+        await parent.sync();
+        return "renamed";
+      }),
+    );
   }
 
   async delete(relative: string, expectedChecksum: string, signal?: AbortSignal): Promise<void> {

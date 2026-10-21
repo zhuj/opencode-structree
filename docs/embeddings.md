@@ -60,7 +60,18 @@ bun scripts/prepare-model.ts --config object-mcp.config.json
 
 The manual script downloads public model assets, verifies their pinned Git blob or LFS SHA-256 hashes, and runs inference on a synthetic verification sentence. Startup preparation verifies downloaded files against the pinned metadata but does not run that inference check. The default q8 E5 weight file is approximately 118 MB, plus the tokenizer and configuration. The weights are not part of the source package.
 
-The snapshot lives at `<cacheDir>/<model>/<revision>`. Preparation fetches files;
+The snapshot lives at `<cacheDir>/<model>/<revision>`. The default
+`embeddings.cacheDir` is the global user cache at `~/.cache/onnx/models`, or
+`$XDG_CACHE_HOME/onnx/models` when `XDG_CACHE_HOME` is set to an absolute path.
+A relative `XDG_CACHE_HOME` is ignored. Every project on the machine using this
+user cache shares the same pinned snapshot, roughly 130 MB for the default model,
+instead of keeping its own copy in its local state. Authoritative sources and
+the derived search index stay in the project. An explicit `cacheDir` still wins,
+with relative values following the [configuration layer's path rules](configuration.md#onnx-provider).
+The model cache must remain outside the object directory, as enforced by
+configuration validation. See [decision 0014](decisions/0014-keep-model-snapshots-in-the-user-cache.md).
+
+Preparation fetches files;
 it does not load the model. Loading is still lazy when inference first needs it.
 The CLI's read-only `status` command does not call preparation. In the library,
 `prepareEmbeddings()` calls the provider's optional `prepare`, records a failure

@@ -6,10 +6,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import Database from "better-sqlite3";
 import { createFramework, type ObjectFramework } from "../src/framework.ts";
 import { FrameworkError } from "../src/lib/errors.ts";
-import type { FileStore } from "../src/lib/filesystem.ts";
+import { FileStore } from "../src/lib/filesystem.ts";
 import type { SqliteIndex } from "../src/lib/sqlite/index.ts";
 import type { EmbeddingProvider, SyncReport } from "../src/lib/types.ts";
 import type { WatchLifecycle } from "../src/lib/vault/watch-lifecycle.ts";
+import { FileWatcher } from "../src/lib/vault/watcher.ts";
 
 const directories: string[] = [];
 const frameworks: ObjectFramework[] = [];
@@ -45,11 +46,21 @@ function project(id: string, title = "Concurrent project") {
   };
 }
 
-async function fixture(options: { directory?: string; provider?: EmbeddingProvider } = {}) {
+async function fixture(
+  options: {
+    directory?: string;
+    provider?: EmbeddingProvider;
+    waitForStartup?: boolean;
+    onError?: (error: FrameworkError) => void;
+    watch?: boolean;
+  } = {},
+) {
   const directory =
     options.directory ?? (await mkdtemp(path.join(os.tmpdir(), "object-mcp-lifecycle-")));
   if (!options.directory) directories.push(directory);
   const framework = await createFramework({
+    ...(options.waitForStartup === undefined ? {} : { waitForStartup: options.waitForStartup }),
+    ...(options.onError ? { onError: options.onError } : {}),
     baseDirectory: directory,
     config: {
       root: "objects",
@@ -57,7 +68,7 @@ async function fixture(options: { directory?: string; provider?: EmbeddingProvid
       embeddings: { provider: "disabled" },
       chunking: { size: 2000 },
       sync: {
-        watch: false,
+        watch: options.watch ?? false,
         debounceMs: 60_000,
         rescanIntervalMs: 0,
         concurrency: 2,
@@ -121,6 +132,147 @@ class HeldEmbeddingProvider implements EmbeddingProvider {
 }
 
 describe("independent instances and lifecycle", () => {
+  test("deferred startup is syncing and dirty even before the watcher is ready", async () => {
+    const release = deferred();
+    releaseWork.push(release.resolve);
+    const start = FileWatcher.prototype.start;
+    const observer = spyOn(FileWatcher.prototype, "start").mockImplementation(async function (
+      this: FileWatcher,
+      ...args
+    ) {
+      await release.promise;
+      return start.apply(this, args);
+    });
+    try {
+      const { framework } = await fixture({ waitForStartup: false, watch: true });
+      expect(framework.status()).toMatchObject({ syncing: true, dirty: true, lastSync: null });
+      release.resolve();
+      await framework.waitForStartup();
+      expect(framework.status()).toMatchObject({ syncing: false, dirty: false });
+    } finally {
+      release.resolve();
+      observer.mockRestore();
+    }
+  });
+
+  test("creation waits for startup by default and exposes the same startup report", async () => {
+    const entered = deferred();
+    const release = deferred();
+    releaseWork.push(release.resolve);
+    const scan = FileStore.prototype.scan;
+    const observer = spyOn(FileStore.prototype, "scan").mockImplementation(async function (
+      this: FileStore,
+      ...args
+    ) {
+      entered.resolve();
+      await release.promise;
+      return scan.apply(this, args);
+    });
+    try {
+      let created = false;
+      const pending = fixture().then((result) => {
+        created = true;
+        return result;
+      });
+      await entered.promise;
+      expect(created).toBe(false);
+      release.resolve();
+      const { framework } = await pending;
+      expect(framework.status().lastSync).toMatchObject(await framework.waitForStartup());
+      expect(framework.status()).toMatchObject({ syncing: false, dirty: false });
+    } finally {
+      release.resolve();
+      observer.mockRestore();
+    }
+  });
+
+  test("deferred startup exposes its running state, dirty follow-up, and completed report", async () => {
+    const entered = deferred();
+    const release = deferred();
+    releaseWork.push(release.resolve);
+    const scan = FileStore.prototype.scan;
+    const observer = spyOn(FileStore.prototype, "scan").mockImplementation(async function (
+      this: FileStore,
+      ...args
+    ) {
+      entered.resolve();
+      await release.promise;
+      return scan.apply(this, args);
+    });
+    try {
+      const { framework } = await fixture({ waitForStartup: false });
+      await entered.promise;
+      expect(framework.status()).toMatchObject({ syncing: true, dirty: false, lastSync: null });
+      framework.requestResync();
+      expect(framework.status()).toMatchObject({ syncing: true, dirty: true });
+      const startup = framework.waitForStartup();
+      release.resolve();
+      const report = await startup;
+      expect(report).toMatchObject({ scanned: 0, indexed: 0, issues: [] });
+      expect(framework.status()).toMatchObject({ syncing: false, dirty: false, lastSync: report });
+      expect(await framework.waitForStartup()).toBe(report);
+    } finally {
+      release.resolve();
+      observer.mockRestore();
+    }
+  });
+
+  test("a deferred startup failure is reported, remains awaitable, and leaves the framework open", async () => {
+    const errors: FrameworkError[] = [];
+    const failure = new FrameworkError("IO", "Startup scan failed");
+    const observer = spyOn(FileStore.prototype, "scan").mockRejectedValue(failure);
+    try {
+      const { framework } = await fixture({
+        waitForStartup: false,
+        onError: (error) => {
+          errors.push(error);
+          throw new Error("Host error observer also failed");
+        },
+      });
+      // Leave the startup unawaited for a turn: the framework must own its rejection handler.
+      await delay(0);
+      expect(errors).toEqual([failure]);
+      await expect(framework.waitForStartup()).rejects.toBe(failure);
+      expect(framework.status()).toMatchObject({
+        syncing: false,
+        dirty: false,
+        lastSync: null,
+        lastError: { code: "IO", message: "Startup scan failed" },
+      });
+      observer.mockRestore();
+      expect((await framework.create("project", project("after-failure"))).object.id).toBe(
+        "after-failure",
+      );
+    } finally {
+      observer.mockRestore();
+    }
+  });
+
+  test("close drains a deferred startup before disposing resources", async () => {
+    const seed = await fixture();
+    await seed.framework.create("project", project("startup-worker"), "Index on startup");
+    await seed.framework.close();
+    const provider = new HeldEmbeddingProvider(1);
+    const { framework } = await fixture({
+      directory: seed.directory,
+      provider,
+      waitForStartup: false,
+    });
+    await provider.entered.promise;
+    const startup = framework.waitForStartup().catch((error: unknown) => error);
+    let closed = false;
+    const closing = framework.close().then(() => {
+      closed = true;
+    });
+    await delay(0);
+    expect(closed).toBe(false);
+    expect(provider.closeCalls).toBe(0);
+    provider.release.resolve();
+    await Promise.all([startup, closing]);
+    expect(provider.closedWhileActive).toBe(false);
+    expect(provider.closeCalls).toBe(1);
+  });
+
   test("independent framework instances cannot both update the same source revision", async () => {
     const first = await fixture();
     const created = await first.framework.create("project", project("shared"), "Initial");
@@ -408,7 +560,7 @@ describe("independent instances and lifecycle", () => {
     expect((await framework.search({ query: "document", mode: "semantic" })).hits).toEqual([]);
   });
 
-  test("rename during deferred embedding indexes the new path within the shared resync without a watcher", async () => {
+  test("rename during deferred embedding is corrected to the id name within the shared resync without a watcher", async () => {
     const provider = new HeldEmbeddingProvider(1);
     const { framework, root } = await fixture({ provider });
     const source = await framework.create(
@@ -426,10 +578,10 @@ describe("independent instances and lifecycle", () => {
     expect(framework.status().objects).toBe(1);
     expect(framework.status().pendingEmbeddings).toBe(0);
     expect(framework.status().dirty).toBe(false);
-    expect((await framework.get("project", source.object.id)).path).toBe(moved);
+    expect((await framework.get("project", source.object.id)).path).toBe(source.path);
     const result = await framework.search({ query: "Renamed document", mode: "semantic" });
     expect(result.hits).toHaveLength(1);
-    expect(result.hits[0]?.path).toBe(moved);
+    expect(result.hits[0]?.path).toBe(source.path);
     expect(result.hits[0]?.checksum).toBe(source.checksum);
   });
 

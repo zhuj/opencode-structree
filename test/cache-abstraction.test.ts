@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../src/lib/config.ts";
+import { objectKey } from "../src/lib/filesystem.ts";
 import { openDatabase } from "../src/lib/sqlite/driver.ts";
 import { SqliteIndex } from "../src/lib/sqlite/index.ts";
 import type { FrameworkConfig, SourceDocument } from "../src/lib/types.ts";
@@ -39,7 +40,7 @@ function source(id: string, text: string): SourceDocument {
   const raw = `---\nid: ${id}\n---\n${text}`;
   return {
     type: "project",
-    key: JSON.stringify(["project", id]),
+    key: objectKey("project", id),
     object,
     body: text,
     raw,
@@ -55,12 +56,14 @@ function source(id: string, text: string): SourceDocument {
 
 for (const driver of ["better-sqlite3", "bun"] as const) {
   describe(`Cache abstraction compatibility (${driver})`, () => {
-    test("opens the original v2 schema, retains cached vectors, and repairs missing/duplicate FTS rows", () => {
+    test("opens v3 with the original table shapes, retains cached vectors, and repairs missing/duplicate FTS rows", () => {
       const sqlite = config(driver);
       const original = openDatabase(sqlite);
       const documents = [source("a", "orchard apples"), source("b", "orchard pears")];
       try {
         original.exec(v2Schema);
+        // V3 changes only key encoding, so the original table shapes remain compatible.
+        original.exec("PRAGMA user_version = 3");
         for (const document of documents) {
           original
             .prepare(`INSERT INTO object_meta(object_key, object_type, id, name, title, path,
@@ -141,6 +144,22 @@ for (const driver of ["better-sqlite3", "bun"] as const) {
         embeddedObjects: 1,
         embeddingRows: 1,
         generation: 8,
+      });
+    });
+
+    test("refuses the v2 cache without changing its version or data", () => {
+      const sqlite = config(driver);
+      const old = openDatabase(sqlite);
+      connections.push(old);
+      old.exec(v2Schema);
+      old.exec("UPDATE cache_state SET generation = 7 WHERE singleton = 1");
+
+      expect(() => new SqliteIndex(sqlite, defaultConfig.search)).toThrow(
+        "Unsupported object index schema 2; use a fresh cache file and resync the Markdown sources.",
+      );
+      expect(old.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+      expect(old.prepare("SELECT generation FROM cache_state WHERE singleton = 1").get()).toEqual({
+        generation: 7,
       });
     });
 

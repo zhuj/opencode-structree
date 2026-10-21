@@ -74,10 +74,12 @@ and whether it is required, is in `references/object-model.md`.
 
 Two properties of the relations are worth knowing before you write:
 
-- **Relation targets are not validated.** Empty identifiers are refused before
-  any target is considered: the object id, owner identifiers such as
-  `relations.project`, and each id inside a relation array must be non-empty.
-  A non-empty id that names no existing target is still stored as written.
+- **Relation targets are not validated.** You may send an id in any case. The
+  framework lowercases the object id, owner identifiers such as
+  `relations.project`, and every other relation identifier at the very start of
+  create, get, update and delete, below the tool boundary, then checks the
+  lowercased form against the [portable stored-id domain](references/object-model.md).
+  A valid id that names no existing target is still stored after normalization.
   Get the target ids first, so the graph stays walkable.
 - **`commitment`, `commitsTo` and `relatesTo` are how intent meets reality.**
   They are the only thing that connects a criterion to the test that proves it,
@@ -134,7 +136,7 @@ inference, and do not change provider configuration to repair a failed query.
 
 The search tool states:
 
-> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
+> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
 
 Use a few content words, not the words of the type name. Two words can match
 anywhere, not necessarily together; `reconcil*` searches `reconcil`, not every
@@ -221,17 +223,36 @@ guard against overwriting a revision someone else produced in between.
 The configured provider label, fingerprint and dimensions are metadata, not
 proof of usability. Known issues are diagnostics, not an exhaustive health check.
 
+The server answers requests while its startup reconciliation runs in the
+background. A search issued right after startup may find nothing while existing
+files await indexing; do not treat that as proof of absence. `objects_status`
+reports whether a synchronization is still running, with `syncing: true` and
+`lastSync: null` until a completed report exists. Create indexes its own object
+immediately, so create followed by search still works during that pass.
+Startup reconciliation is itself a repair path and can rename files to match
+their ids after the server starts answering; it is not a read-only operation.
+
 `objects_resync` refreshes the searchable state and reports every issue it
 found. It is the repair path when a search misses something you know exists,
 and it is the only tool that returns the full issue list. It writes derived
-state, so it is not a read-only call: leave it out of an investigation that
-must not change anything.
+state and can rename source files, so it is not a read-only call: leave it out
+of an investigation that must not change anything.
 
 ## Rules that keep the vault consistent
 
 - **The id is the handle.** It is stable, unique within its type, and it is
-  what every relation points at. Renaming an id is a new object with a broken
-  link, not a rename.
+  what every relation points at. The stored id is always lowercase: `MyThing`
+  becomes `mything`, and a second create differing only in case fails with
+  `ALREADY_EXISTS`. The file name is the id: create writes
+  `<type directory>/<id>.md`. The scanner restores a differing base name in its
+  existing directory and updates the indexed path, because the content is the
+  source of truth. A filesystem that folds case or normalizes names may spell
+  the name differently while the target still names the same file. The scanner
+  accepts that spelling, leaves the file unchanged and indexed at its actual
+  path, and reports no issue. Only a different file holding the target name is a
+  conflict: both files remain unchanged and the object is excluded with
+  `RENAME_CONFLICT`. Nothing is overwritten. Subdirectories are still supported.
+  Renaming an id is a new object with a broken link, not a rename.
 - **Checksums authorize writes.** Update and delete need the checksum of the
   revision they replace. Read before you write.
 - **Timestamps belong to the caller.** The server records what you send. Send
@@ -294,7 +315,7 @@ for the work.
 | `ALREADY_EXISTS` | The id is taken | `get` that id and update it, or choose another id |
 | `CHECKSUM_CONFLICT` | The revision moved since you read it | `get` it again and reapply your change |
 | `IMMUTABLE_ID` or `IMMUTABLE_CREATED_AT` | The update tried to change a frozen field | Keep the original values |
-| `VALIDATION` / `VALIDATION_ERROR` | A field is missing or invalid, including an empty object, owner or relation-array identifier | Supply a non-empty identifier; check `objects_definitions` for other field errors |
+| `VALIDATION` / `VALIDATION_ERROR` | A field is missing or invalid, including a caller-supplied identifier whose lowercased form is outside the portable stored-id domain | Supply an identifier valid after lowercasing; check `objects_definitions` for other field errors |
 | A search misses an object you know exists | Results are bounded and the searchable state can be behind the last change | Confirm a known id with `get`; fully paginate the type's list for enumeration; resync only when a write is permitted |
 
 ## References

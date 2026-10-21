@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  link,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -11,7 +21,12 @@ import { BaseObjectSchema } from "../src/lib/base-schema.ts";
 import { FrameworkError } from "../src/lib/errors.ts";
 import type { FileStore } from "../src/lib/filesystem.ts";
 import { createMcpServer } from "../src/lib/mcp.ts";
-import { type EmbeddingProvider, STATUS_ISSUE_LIMIT, type StoredObject } from "../src/lib/types.ts";
+import {
+  type EmbeddingProvider,
+  type ObjectDefinition,
+  STATUS_ISSUE_LIMIT,
+  type StoredObject,
+} from "../src/lib/types.ts";
 import { coreDefinitions, ObjectRegistry } from "../src/registry.ts";
 
 const tempDirs: string[] = [];
@@ -107,12 +122,18 @@ class TestEmbeddingProvider implements EmbeddingProvider {
 }
 
 async function fixture(
-  options: { watch?: boolean; provider?: TestEmbeddingProvider; directory?: string } = {},
+  options: {
+    watch?: boolean;
+    provider?: TestEmbeddingProvider;
+    directory?: string;
+    definitions?: readonly ObjectDefinition[];
+  } = {},
 ) {
   const directory =
     options.directory ?? (await mkdtemp(path.join(os.tmpdir(), "object-mcp-framework-")));
   if (!options.directory) tempDirs.push(directory);
   const framework = await createFramework({
+    ...(options.definitions ? { definitions: options.definitions } : {}),
     baseDirectory: directory,
     config: {
       root: "objects",
@@ -136,6 +157,259 @@ async function eventually(check: () => boolean | Promise<boolean>, timeoutMs = 5
 }
 
 describe("filesystem-authoritative framework", () => {
+  test("custom identifier schemas cannot bypass the shared filename domain", async () => {
+    const { framework, root } = await fixture({
+      definitions: [
+        {
+          name: "custom",
+          directory: "customs",
+          description: "Custom identifier schema",
+          schema: Schema.Struct({ ...BaseObjectSchema.fields, id: Schema.String }),
+        },
+      ],
+    });
+    for (const id of ["../outside", "con", ".hidden", "a".repeat(201)])
+      await expect(framework.create("custom", measure(id))).rejects.toMatchObject({
+        code: "VALIDATION",
+      });
+    expect(await readdir(path.join(root, "customs"))).toEqual([]);
+    const { relations: _relations, ...valid } = project("GoodId");
+    const created = await framework.create("custom", valid);
+    expect(created.object.id).toBe("goodid");
+  });
+
+  test("reconciliation reports a filesystem rename failure and continues", async () => {
+    const { framework, root } = await fixture();
+    const first = await framework.create("project", project("first"));
+    const second = await framework.create("project", project("second"));
+    await framework.resync();
+    await rename(path.join(root, first.path), path.join(root, "projects/a.md"));
+    await rename(path.join(root, second.path), path.join(root, "projects/b.md"));
+    const resources = framework as unknown as { readonly store: FileStore };
+    const renameFile = resources.store.files.renameBasename.bind(resources.store.files);
+    const renameSpy = spyOn(resources.store.files, "renameBasename").mockImplementation(
+      (...args) => {
+        if (args[0] === "projects/a.md") return Promise.reject(new Error("Rename denied"));
+        return renameFile(...args);
+      },
+    );
+    try {
+      const report = await framework.resync();
+      expect(report.issues).toContainEqual(
+        expect.objectContaining({
+          path: "projects/a.md",
+          code: "RENAME",
+          message: "Rename denied",
+        }),
+      );
+      expect((await readdir(path.join(root, "projects"))).sort()).toEqual(["a.md", "second.md"]);
+      expect(framework.status().objects).toBe(1);
+      expect((await framework.get("project", "second")).path).toBe(second.path);
+    } finally {
+      renameSpy.mockRestore();
+    }
+  });
+
+  test("CRUD normalizes ids and nested relation identifiers before identity lookup", async () => {
+    const { framework } = await fixture();
+    const input = {
+      ...adr("MyThing"),
+      relations: {
+        commitment: { scenarios: ["ScEnArIo"] },
+        partOf: "PaReNt",
+        dependsOn: ["OtHeR"],
+      },
+    };
+    const created = await framework.create("adr", input);
+    expect(created.object.id).toBe("mything");
+    expect(created.path).toBe("adrs/mything.md");
+    expect(created.object).toMatchObject({
+      relations: {
+        commitment: { scenarios: ["scenario"] },
+        partOf: "parent",
+        dependsOn: ["other"],
+      },
+    });
+    expect(input.id).toBe("MyThing");
+    expect((await framework.get("adr", "MyThing")).object.id).toBe("mything");
+    await expect(framework.create("adr", adr("MYTHING"))).rejects.toMatchObject({
+      code: "ALREADY_EXISTS",
+    });
+    const updated = await framework.update("adr", "MYTHING", input, "changed", created.checksum);
+    expect(updated.object.id).toBe("mything");
+    expect(await framework.delete("adr", "MyThing", updated.checksum)).toEqual({
+      type: "adr",
+      id: "mything",
+      deleted: true,
+    });
+  });
+
+  test("reconciliation corrects only the basename and follows it in the index", async () => {
+    const { framework, root } = await fixture();
+    const created = await framework.create("project", project(), "rename-evidence");
+    await framework.resync();
+    await mkdir(path.join(root, "projects/nested"));
+    await rename(path.join(root, created.path), path.join(root, "projects/nested/other.md"));
+    expect((await framework.resync()).issues).toEqual([]);
+    expect((await framework.get("project", "p-1")).path).toBe("projects/nested/p-1.md");
+    expect(
+      (await framework.search({ query: "rename-evidence", mode: "fulltext" })).hits[0]?.path,
+    ).toBe("projects/nested/p-1.md");
+    expect(await readdir(path.join(root, "projects/nested"))).toEqual(["p-1.md"]);
+  });
+
+  test("reconciliation keeps equivalent filenames indexed at their actual discovered path", async () => {
+    const { framework, root } = await fixture();
+    const created = await framework.create(
+      "project",
+      project("mything"),
+      "equivalent-name-evidence",
+    );
+    await framework.resync();
+    const actual = "projects/MyThing.md";
+    await rename(path.join(root, created.path), path.join(root, actual));
+    const resources = framework as unknown as { readonly store: FileStore };
+    const renameFile = resources.store.files.renameBasename.bind(resources.store.files);
+    const renameSpy = spyOn(resources.store.files, "renameBasename").mockImplementation(
+      async (...args) => {
+        // Simulate a folded target after discovery, without adding a duplicate scan entry.
+        if ((await resources.store.files.hash(created.path)) === null)
+          await link(path.join(root, actual), path.join(root, created.path));
+        return renameFile(...args);
+      },
+    );
+    try {
+      const report = await framework.resync();
+      expect(report.issues).toEqual([]);
+      expect(renameSpy).toHaveBeenCalledTimes(1);
+      expect(framework.status().objects).toBe(1);
+      expect(
+        (await framework.search({ query: "equivalent-name-evidence", mode: "fulltext" })).hits[0]
+          ?.path,
+      ).toBe(actual);
+      expect(await readFile(path.join(root, actual), "utf8")).toContain("id: mything");
+    } finally {
+      renameSpy.mockRestore();
+    }
+  });
+
+  test("reconciliation excludes filename conflicts without overwriting either file", async () => {
+    const { framework, root } = await fixture();
+    const created = await framework.create("project", project());
+    await framework.resync();
+    const original = await readFile(path.join(root, created.path), "utf8");
+    await rename(path.join(root, created.path), path.join(root, "projects/other.md"));
+    await writeFile(path.join(root, created.path), "not a valid document");
+    const report = await framework.resync();
+    expect(report.issues).toContainEqual(
+      expect.objectContaining({ path: "projects/other.md", code: "RENAME_CONFLICT" }),
+    );
+    expect(framework.status().objects).toBe(0);
+    expect(await readFile(path.join(root, "projects/other.md"), "utf8")).toBe(original);
+    expect(await readFile(path.join(root, created.path), "utf8")).toBe("not a valid document");
+  });
+
+  test("reconciliation excludes invalid frontmatter ids without renaming the source", async () => {
+    const { framework, root } = await fixture();
+    const created = await framework.create("project", project());
+    await framework.resync();
+    const raw = (await readFile(path.join(root, created.path), "utf8")).replace(
+      "id: p-1",
+      "id: ../outside",
+    );
+    await writeFile(path.join(root, created.path), raw);
+    const report = await framework.resync();
+    expect(report.issues).toContainEqual(
+      expect.objectContaining({ path: created.path, code: "VALIDATION" }),
+    );
+    expect(framework.status().objects).toBe(0);
+    expect(await readFile(path.join(root, created.path), "utf8")).toBe(raw);
+    expect(await readdir(path.join(root, "projects"))).toEqual(["p-1.md"]);
+  });
+
+  test("reconciliation reports a hand-written mixed-case id without indexing or rewriting it", async () => {
+    const { framework, root } = await fixture();
+    const created = await framework.create("project", project("mything"));
+    await framework.resync();
+    const raw = (await readFile(path.join(root, created.path), "utf8")).replace(
+      "id: mything",
+      "id: MyThing",
+    );
+    await writeFile(path.join(root, created.path), raw);
+    const report = await framework.resync();
+    expect(report.issues).toContainEqual(
+      expect.objectContaining({ path: created.path, code: "VALIDATION" }),
+    );
+    expect(framework.status().objects).toBe(0);
+    expect(await readFile(path.join(root, created.path), "utf8")).toBe(raw);
+    expect(await readdir(path.join(root, "projects"))).toEqual(["mything.md"]);
+  });
+
+  test("MCP CRUD accepts mixed-case ids and stores lowercase ids and filenames, including capital dotted I", async () => {
+    const { framework, root } = await fixture();
+    const handler = createMcpHandler(() => createMcpServer(framework));
+    const client = new Client(
+      { name: "identifier-integration", version: "1.0.0" },
+      { versionNegotiation: { mode: "auto" } },
+    );
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("http://framework.test/mcp"), {
+        fetch: (input, init) => handler.fetch(new Request(input, init)),
+      }),
+    );
+    try {
+      const registry = new ObjectRegistry(coreDefinitions);
+      for (const id of ["MyThing", "İ"]) {
+        const normalized = id.toLowerCase();
+        const object = registry.encode("project", {
+          ...project(id),
+          relations: { partOf: "PaReNt" },
+        });
+        const created = await client.callTool({ name: "project_create", arguments: { object } });
+        expect(created.isError).not.toBe(true);
+        expect(created.structuredContent).toMatchObject({
+          object: { id: normalized, relations: { partOf: "parent" } },
+          path: `projects/${normalized}.md`,
+        });
+        expect(await readFile(path.join(root, `projects/${normalized}.md`), "utf8")).toContain(
+          `id: ${normalized}`,
+        );
+        const fetched = await client.callTool({ name: "project_get", arguments: { id } });
+        expect(fetched.isError).not.toBe(true);
+        expect(fetched.structuredContent).toMatchObject({ object: { id: normalized } });
+        const duplicate = await client.callTool({ name: "project_create", arguments: { object } });
+        expect(duplicate.isError).toBe(true);
+        expect(duplicate.structuredContent).toHaveProperty("error.code", "ALREADY_EXISTS");
+        const updated = await client.callTool({
+          name: "project_update",
+          arguments: {
+            id,
+            object,
+            body: "Updated",
+            expectedChecksum: (created.structuredContent as { checksum: string }).checksum,
+          },
+        });
+        expect(updated.isError).not.toBe(true);
+        expect(updated.structuredContent).toMatchObject({
+          object: { id: normalized },
+          path: `projects/${normalized}.md`,
+        });
+        const deleted = await client.callTool({
+          name: "project_delete",
+          arguments: {
+            id,
+            expectedChecksum: (updated.structuredContent as { checksum: string }).checksum,
+          },
+        });
+        expect(deleted.isError).not.toBe(true);
+        expect(deleted.structuredContent).toMatchObject({ id: normalized, deleted: true });
+      }
+    } finally {
+      await client.close();
+      await handler.close();
+    }
+  });
+
   test("search carries lexical evidence independently of body and preserves semantic-only chunks", async () => {
     const { framework } = await fixture({ provider: new TestEmbeddingProvider() });
     await framework.create("project", project(), "A car design with orchard evidence");
@@ -195,15 +469,20 @@ describe("filesystem-authoritative framework", () => {
     }
   });
 
-  test("CRUD persists exact schemas and separate body; unrestricted IDs cannot become paths", async () => {
+  test("CRUD persists exact schemas and separate body; invalid IDs cannot become paths", async () => {
     const { framework, root } = await fixture();
-    const input = project("../../outside:project");
+    await expect(
+      framework.create("project", project("../../outside:project")),
+    ).rejects.toMatchObject({
+      code: "VALIDATION",
+    });
+    const input = project();
     const created = await framework.create(
       "project",
       input,
       "# Design\n\nFilesystem is authoritative.\n",
     );
-    expect(created.path).toMatch(/^projects\/id-[a-f0-9]{64}\.md$/);
+    expect(created.path).toBe("projects/p-1.md");
     const raw = await readFile(path.join(root, created.path), "utf8");
     expect(raw).toContain("createdAt: 2026-10-15T12:00:00.000Z");
     expect(raw).toContain("---\n# Design");
@@ -270,8 +549,12 @@ describe("filesystem-authoritative framework", () => {
     await rename(oldPath, newPath);
     await framework.resync();
     expect(provider.documentCalls).toBe(count);
-    expect((await framework.get("project", "p-1")).path).toBe("projects/human-readable.md");
-    const original = await readFile(newPath, "utf8");
+    expect((await framework.get("project", "p-1")).path).toBe(created.path);
+    expect((await framework.search({ query: "automobile", mode: "semantic" })).hits[0]?.path).toBe(
+      created.path,
+    );
+    await expect(readFile(newPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    const original = await readFile(oldPath, "utf8");
     const duplicate = path.join(path.dirname(oldPath), "duplicate.md");
     await writeFile(duplicate, original);
     const duplicateReport = await framework.resync();
@@ -279,14 +562,14 @@ describe("filesystem-authoritative framework", () => {
     expect(framework.status().objects).toBe(0);
     await expect(framework.get("project", "p-1")).rejects.toMatchObject({ code: "DUPLICATE_ID" });
     await rm(duplicate);
-    await writeFile(newPath, "---\nid: [broken\n---\nPreserve this text");
+    await writeFile(oldPath, "---\nid: [broken\n---\nPreserve this text");
     expect((await framework.resync()).issues[0]?.code).toBe("YAML");
-    expect(await readFile(newPath, "utf8")).toContain("Preserve this text");
-    await writeFile(newPath, original.replace("A car design", "A SQLite database design"));
+    expect(await readFile(oldPath, "utf8")).toContain("Preserve this text");
+    await writeFile(oldPath, original.replace("A car design", "A SQLite database design"));
     await framework.resync();
     expect((await framework.search({ query: "SQLite", mode: "fulltext" })).hits).toHaveLength(1);
     expect((await framework.search({ query: "car", mode: "fulltext" })).hits).toHaveLength(0);
-    await rm(newPath);
+    await rm(oldPath);
     expect((await framework.resync()).deleted).toBe(1);
     expect(framework.status().embeddingRows).toBe(0);
   });

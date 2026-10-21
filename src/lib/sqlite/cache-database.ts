@@ -5,7 +5,8 @@ import { IndexedTable } from "./index-table.ts";
 import { Table } from "./table.ts";
 import { VectorIndex, type VectorRow } from "./vector-index.ts";
 
-const SCHEMA_VERSION = 2;
+// Key encoding changed; older cache files must be replaced rather than migrated.
+const SCHEMA_VERSION = 3;
 const APPLICATION_ID = 0x4f4d4350;
 
 export interface MetadataRow {

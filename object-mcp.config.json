@@ -11,7 +11,6 @@
     "revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
     "dimensions": 384,
     "dtype": "q8",
-    "cacheDir": "./.local/.structree/.cache/models",
     "localFilesOnly": false,
     "queryPrefix": "query: ",
     "documentPrefix": "passage: ",

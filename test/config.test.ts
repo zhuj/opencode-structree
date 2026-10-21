@@ -1,5 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import * as os from "node:os";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { FrameworkConfigInput } from "../src/lib/config.ts";
@@ -116,17 +117,12 @@ test("MCP input repair defaults are bounded and nested overrides preserve other 
   }
 });
 
-test("the default object, database and model cache paths live under the project root", async () => {
+test("the default object and database paths live under the project root", async () => {
   await withScratchDirectory(async (directory) => {
     const config = defineConfig({}, directory);
     expect(config.root).toBe(path.join(directory, ".local", ".structree", "objects"));
     expect(config.sqlite.path).toBe(
       path.join(directory, ".local", ".structree", ".cache", "index.sqlite"),
-    );
-    const embeddings = config.embeddings;
-    if (embeddings.provider !== "onnx") throw new Error("Expected the onnx provider.");
-    expect(embeddings.cacheDir).toBe(
-      path.join(directory, ".local", ".structree", ".cache", "models"),
     );
     expect(() =>
       defineConfig(
@@ -134,6 +130,63 @@ test("the default object, database and model cache paths live under the project 
         directory,
       ),
     ).toThrow("outside");
+  });
+});
+
+test("the default model cache uses the user cache environment at configuration load time", async () => {
+  await withScratchDirectory(async (directory) => {
+    const previousCacheHome = process.env.XDG_CACHE_HOME;
+    const home = path.join(directory, "home");
+    const cacheHome = path.join(directory, "user-cache");
+    const jsonFile = await writeJsonFile(directory, "config.json", {});
+    await mkdir(home);
+    const homeLookup = spyOn(os, "homedir").mockReturnValue(home);
+    try {
+      for (const xdgCacheHome of [undefined, "", "relative-cache", cacheHome]) {
+        if (xdgCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
+        else process.env.XDG_CACHE_HOME = xdgCacheHome;
+        const config = await loadConfig(jsonFile, {
+          projectRoot: directory,
+          localConfigFile: null,
+        });
+        const embeddings = config.embeddings;
+        if (embeddings.provider !== "onnx") throw new Error("Expected the onnx provider.");
+        expect(embeddings.cacheDir).toBe(
+          path.join(
+            xdgCacheHome === cacheHome ? cacheHome : path.join(home, ".cache"),
+            "onnx",
+            "models",
+          ),
+        );
+        expect(path.isAbsolute(embeddings.cacheDir)).toBe(true);
+        expect(defineConfig({}, path.join(directory, "other-project")).embeddings).toEqual(
+          embeddings,
+        );
+        expect(() => defineConfig({ root: embeddings.cacheDir }, directory)).toThrow(
+          "The model cache must be outside the object directory.",
+        );
+      }
+    } finally {
+      homeLookup.mockRestore();
+      if (previousCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = previousCacheHome;
+    }
+  });
+});
+
+test("an explicit model cache in a configuration file wins and relative paths use the base directory", async () => {
+  await withScratchDirectory(async (directory) => {
+    for (const cacheDir of [path.join(directory, "absolute-cache"), "relative-cache"]) {
+      const jsonFile = await writeJsonFile(directory, "config.json", {
+        embeddings: { provider: "onnx", cacheDir },
+      });
+      const config = await loadConfig(jsonFile, {
+        projectRoot: directory,
+        localConfigFile: null,
+      });
+      if (config.embeddings.provider !== "onnx") throw new Error("Expected the onnx provider.");
+      expect(config.embeddings.cacheDir).toBe(path.resolve(directory, cacheDir));
+    }
   });
 });
 

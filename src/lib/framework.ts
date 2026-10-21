@@ -41,6 +41,8 @@ interface FrameworkOptions {
   readonly config?: FrameworkConfigInput;
   readonly baseDirectory?: string;
   readonly embeddingProvider?: EmbeddingProvider;
+  /** Wait for startup reconciliation before returning. Defaults to true. */
+  readonly waitForStartup?: boolean;
   readonly onError?: (error: FrameworkError) => void;
 }
 
@@ -57,6 +59,25 @@ const publicObject = (document: SourceDocument): StoredObject => ({
   path: document.path,
   checksum: document.checksum,
 });
+
+function lowercaseRelations(value: unknown): unknown {
+  if (typeof value === "string") return value.toLowerCase();
+  if (Array.isArray(value)) return value.map(lowercaseRelations);
+  if (value !== null && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, child]) => [key, lowercaseRelations(child)]),
+    );
+  return value;
+}
+
+function normalizeIdentifiers(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  return {
+    ...value,
+    ...("id" in value && typeof value.id === "string" ? { id: value.id.toLowerCase() } : {}),
+    ...("relations" in value ? { relations: lowercaseRelations(value.relations) } : {}),
+  };
+}
 
 /**
  * The status report lists a bounded number of issues, so the totals and the per-code
@@ -102,6 +123,8 @@ export class ObjectFramework implements ObjectFacade {
   private closePromise: Promise<void> | undefined;
   private lastSync: SyncReport | undefined;
   private lastError: FrameworkError | undefined;
+  private startupReconciliation!: Promise<SyncReport>;
+  private startupPending = true;
 
   private constructor(
     config: FrameworkConfig,
@@ -153,7 +176,19 @@ export class ObjectFramework implements ObjectFacade {
     try {
       framework = new ObjectFramework(config, registry, provider, options.onError ?? (() => {}));
       await framework.store.initialize();
-      await framework.synchronization.start();
+      const started = framework;
+      started.startupReconciliation = started.synchronization.start();
+      // Handle rejection even when the host never awaits startup; retain the original promise.
+      void started.startupReconciliation.then(
+        () => {
+          started.startupPending = false;
+        },
+        (error: unknown) => {
+          started.startupPending = false;
+          if (options.waitForStartup === false && !started.closing) started.reportError(error);
+        },
+      );
+      if (options.waitForStartup !== false) await started.waitForStartup();
       return framework;
     } catch (error) {
       try {
@@ -168,6 +203,11 @@ export class ObjectFramework implements ObjectFacade {
       }
       throw error;
     }
+  }
+
+  /** Resolves with the startup reconciliation report, or rejects with its failure. */
+  waitForStartup(): Promise<SyncReport> {
+    return this.startupReconciliation;
   }
 
   private ensureOpen(): void {
@@ -250,6 +290,7 @@ export class ObjectFramework implements ObjectFacade {
   }
 
   create(type: string, object: unknown, body = "", signal?: AbortSignal): Promise<StoredObject> {
+    object = normalizeIdentifiers(object);
     return this.run(
       async (inner) =>
         this.store.withProcessLock(async () => {
@@ -264,6 +305,7 @@ export class ObjectFramework implements ObjectFacade {
   }
 
   get(type: string, id: string, signal?: AbortSignal): Promise<StoredObject> {
+    id = id.toLowerCase();
     return this.run(async (inner) => publicObject(await this.store.get(type, id, inner)), signal);
   }
 
@@ -275,6 +317,8 @@ export class ObjectFramework implements ObjectFacade {
     expectedChecksum: string,
     signal?: AbortSignal,
   ): Promise<StoredObject> {
+    id = id.toLowerCase();
+    object = normalizeIdentifiers(object);
     return this.run(
       async (inner) =>
         this.store.withProcessLock(async () => {
@@ -294,6 +338,7 @@ export class ObjectFramework implements ObjectFacade {
     expectedChecksum: string,
     signal?: AbortSignal,
   ): Promise<{ type: string; id: string; deleted: true }> {
+    id = id.toLowerCase();
     return this.run(
       async (inner) =>
         this.store.withProcessLock(async () => {
@@ -381,7 +426,45 @@ export class ObjectFramework implements ObjectFacade {
               invalidate: (keys) => this.index.removeKeys(keys),
             },
           );
-          return { scan, ...result };
+          const documents: SourceDocument[] = [];
+          const issues: SyncIssue[] = [...scan.issues];
+          for (const document of scan.documents) {
+            const basename = `${document.object.id}.md`;
+            if (path.posix.basename(document.path) === basename) {
+              documents.push(document);
+              continue;
+            }
+            try {
+              const outcome = await this.store.files.renameBasename(
+                document.path,
+                basename,
+                document.checksum,
+                signal,
+              );
+              if (outcome === "equivalent") {
+                documents.push(document);
+                continue;
+              }
+              const renamed = {
+                ...document,
+                path: path.posix.join(path.posix.dirname(document.path), basename),
+              };
+              this.index.upsertDocument(renamed);
+              documents.push(renamed);
+            } catch (error) {
+              signal.throwIfAborted();
+              this.index.removeKeys([document.key]);
+              issues.push({
+                path: document.path,
+                code:
+                  (error as { code?: unknown } | null)?.code === "EEXIST"
+                    ? "RENAME_CONFLICT"
+                    : "RENAME",
+                message: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          return { scan: { ...scan, documents, issues }, ...result };
         }, signal),
       signal,
     );
@@ -512,8 +595,8 @@ export class ObjectFramework implements ObjectFacade {
       ...summarizeIssues(index.issues),
       root: this.config.root,
       registeredTypes: this.definitions.map((definition) => definition.name),
-      syncing: this.synchronization.syncing,
-      dirty: this.synchronization.dirty,
+      syncing: this.startupPending || this.synchronization.syncing,
+      dirty: this.synchronization.dirty || (this.startupPending && !this.synchronization.syncing),
       embeddings: {
         provider: this.config.embeddings.provider,
         fingerprint: this.fingerprint ?? null,

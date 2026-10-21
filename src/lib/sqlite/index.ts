@@ -1,3 +1,4 @@
+import { objectKey } from "../filesystem.ts";
 import type {
   EmbeddedChunk,
   FrameworkConfig,
@@ -90,8 +91,8 @@ export class SqliteIndex {
 
   upsertDocument(document: SourceDocument): boolean {
     this.assertOpen();
-    if (document.key !== JSON.stringify([document.type, document.object.id]))
-      throw new Error("Document key must encode [type, id].");
+    if (document.key !== objectKey(document.type, document.object.id))
+      throw new Error("Document key must be the type and encoded id joined by a colon.");
     const json = JSON.stringify(document.json);
     return this.db
       .transaction(() => {
@@ -429,10 +430,10 @@ function exactLabels(
   row: MetadataRow,
   json = JSON.parse(row.json) as Record<string, unknown>,
 ): Pick<IndexedMetadata, "id" | "name" | "title"> {
-  // JSON escapes lone UTF-16 surrogates, which SQLite's UTF-8 TEXT bindings can normalize.
-  const identity = JSON.parse(row.object_key) as [string, string];
+  // The json column carries the exact id because a TEXT binding normalizes an unpaired
+  // surrogate; the key is no longer decoded.
   return {
-    id: identity[1],
+    id: typeof json.id === "string" ? json.id : row.id,
     name: typeof json.name === "string" ? json.name : row.name,
     title: typeof json.title === "string" ? json.title : row.title,
   };

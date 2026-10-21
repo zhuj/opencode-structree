@@ -15,9 +15,9 @@ Configuration is validated by `FrameworkConfigSchema` in `src/lib/config.ts`. Pa
 | `server.name` | `object-mcp` | MCP server identity. |
 | `server.version` | `0.1.0` | MCP server version. |
 
-Relative values resolve against the base directory of their layer. Values from a JSON `--config` file resolve against that file's own directory, values from the local override file resolve against the project root, and the built-in defaults resolve against the project root for the CLI and against `baseDirectory` for programmatic use. The shipped JSON configurations set `root`, `sqlite.path`, and the model cache explicitly, so their data always resolves to the repository root.
+Relative values resolve against the base directory of their layer. Values from a JSON `--config` file resolve against that file's own directory, values from the local override file resolve against the project root, and relative built-in defaults resolve against the project root for the CLI and against `baseDirectory` for programmatic use. The default model cache is an absolute path in the global user cache, not in the project. The shipped JSON configurations set `root` and `sqlite.path` explicitly, so their source data and search index resolve to the repository root.
 
-The coordination database has a fixed name under the source root so all framework instances operating on that root use the same lock. With the default source root it is `.local/.structree/objects/.object-mcp-lock.sqlite`. It contains an empty coordination table, no source objects. Do not delete it while any instance is running. The search index and model cache can be discarded after shutting down all instances; startup then rebuilds search from Markdown, and CLI `serve` and `sync` prepare missing model files again when downloads are permitted.
+The coordination database has a fixed name under the source root so all framework instances operating on that root use the same lock. With the default source root it is `.local/.structree/objects/.object-mcp-lock.sqlite`. It contains an empty coordination table, no source objects. Do not delete it while any instance is running. The search index and model cache can be discarded after shutting down all instances using them, including other projects sharing the user cache; startup then rebuilds search from Markdown, and CLI `serve` and `sync` prepare missing model files again when downloads are permitted.
 
 Both native adapters were tested on Linux x64. Custom macOS SQLite loading is supported by configuration and its initialization guard is tested, but that platform was not exercised in this workspace.
 
@@ -113,12 +113,14 @@ Set `embeddings.provider` to `onnx`.
 | `dimensions` | `384` | Required vector dimension. Inference output is validated. |
 | `dtype` | `q8` | `q8`, `fp32`, `fp16`, or `q4`; matching ONNX files must exist. |
 | `device` | `cpu` | Execution provider: `cpu` or `cuda`. The CPU execution provider is the default and always available. `cuda` needs the CUDA 12 runtime libraries present for the installed onnxruntime-node build; a backend that cannot be initialized fails with the `DEVICE_UNAVAILABLE` error code instead of an opaque runtime failure. The device participates in the cache fingerprint, so switching it invalidates the cached vectors. |
-| `cacheDir` | `.local/.structree/.cache/models` | Directory for verified snapshots; must be outside source root. |
+| `cacheDir` | `~/.cache/onnx/models`, or `$XDG_CACHE_HOME/onnx/models` with an absolute `XDG_CACHE_HOME` | Global user cache for verified snapshots; must be outside source root. |
 | `localFilesOnly` | `false` | Permit fetching missing pinned snapshot files during preparation. Set true for offline-only operation: a missing snapshot reports `MODEL_NOT_CACHED` and nothing is fetched. |
 | `queryPrefix` | `query: ` | Prefix applied to query windows. |
 | `documentPrefix` | `passage: ` | Prefix applied to document windows. |
 | `maxTokens` | `512` | Configured context ceiling; actual tokenizer/model limits also apply. |
 | `batchSize` | `8` | Maximum inference batch size. |
+
+The default `embeddings.cacheDir` joins the user cache directory with `onnx` and `models`. The user cache directory is `XDG_CACHE_HOME` when set to an absolute path and `~/.cache` otherwise; a relative `XDG_CACHE_HOME` is ignored. A snapshot lives at `<cacheDir>/<model>/<revision>` and is shared by every project on the machine using this user cache. An explicit `cacheDir` in configuration still wins. A relative value still resolves against the project directory for local overrides and against `baseDirectory` for programmatic use; a JSON `--config` file resolves it against that file's directory, like other relative paths. Configuration validation still rejects a model cache inside the object directory. See [decision 0014](decisions/0014-keep-model-snapshots-in-the-user-cache.md).
 
 The CLI calls `prepareEmbeddings()` for `serve` and `sync`, but not for the read-only `status` report. Preparation returns a complete pinned snapshot without a network request; if required files are missing and downloads are permitted, it fetches the missing files for the pinned revision. A failure is reported without preventing the server from starting or full-text search from working; semantic/hybrid requests keep their existing error contracts. Preparation leaves the model unloaded; model loading remains lazy when inference is needed. Library hosts decide whether to call `prepareEmbeddings()` themselves; framework creation does not perform preparation automatically.
 

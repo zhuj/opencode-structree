@@ -64,6 +64,46 @@ async function expectSchemaFailure(operation: Promise<unknown>, field: string): 
 }
 
 describe("generic Markdown vault", () => {
+  test("basename rename accepts the same device and inode without changing either name", async () => {
+    const { vault, files, root } = await setup();
+    const source = await vault.create("MyThing.md", input());
+    // A hard-link alias exercises the same identity check on a case-sensitive filesystem.
+    if ((await files.hash("mything.md")) === null)
+      await fs.link(path.join(root, "MyThing.md"), path.join(root, "mything.md"));
+    const names = await fs.readdir(root);
+    expect(await files.renameBasename(source.path, "mything.md", source.checksum)).toBe(
+      "equivalent",
+    );
+    expect(await fs.readdir(root)).toEqual(names);
+    expect(await files.readText("MyThing.md")).toBe(source.raw);
+    expect(await files.readText("mything.md")).toBe(source.raw);
+  });
+
+  test("basename rename distinguishes publication from an existing different file", async () => {
+    const { vault, files } = await setup();
+    const source = await vault.create("source.md", input());
+    const target = await vault.create("target.md", input("different"));
+    await expect(
+      files.renameBasename(source.path, target.path, source.checksum),
+    ).rejects.toMatchObject({ code: "EEXIST" });
+    expect(await files.readText(source.path)).toBe(source.raw);
+    expect(await files.readText(target.path)).toBe(target.raw);
+    expect(await files.renameBasename(source.path, "free.md", source.checksum)).toBe("renamed");
+    expect(await files.readText("free.md")).toBe(source.raw);
+    expect(await files.hash(source.path)).toBeNull();
+  });
+
+  test("basename rename does not treat a symlink target as an equivalent file", async () => {
+    const { vault, files, root } = await setup();
+    const source = await vault.create("source.md", input());
+    await fs.symlink(path.join(root, source.path), path.join(root, "target.md"));
+    await expect(
+      files.renameBasename(source.path, "target.md", source.checksum),
+    ).rejects.toMatchObject({ code: "EEXIST" });
+    expect(await files.readText(source.path)).toBe(source.raw);
+    expect((await fs.lstat(path.join(root, "target.md"))).isSymbolicLink()).toBe(true);
+  });
+
   test("round-trips an injected Effect header and exact Markdown body", async () => {
     const { vault, root } = await setup();
     const body = "# A note\r\n\r\nРусский текст  \n\n";

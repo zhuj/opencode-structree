@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { objectKey } from "../src/lib/filesystem.ts";
 import { createBunLibraryGuard } from "../src/lib/sqlite/driver.ts";
 import { literalFtsQuery, SqliteIndex } from "../src/lib/sqlite/index.ts";
 import type { EmbeddedChunk, FrameworkConfig, SourceDocument } from "../src/lib/types.ts";
@@ -53,7 +54,7 @@ function source(type: string, id: string, body: string, name = id, title = name)
   };
   const raw = `---\nid: ${JSON.stringify(id)}\nname: ${JSON.stringify(name)}\ntitle: ${JSON.stringify(title)}\n---\n${body}`;
   return {
-    key: JSON.stringify([type, id]),
+    key: objectKey(type, id),
     type,
     object,
     body,
@@ -73,6 +74,35 @@ function embeddings(document: SourceDocument, ...vectors: number[][]): EmbeddedC
     vector: new Float32Array(vector),
   }));
 }
+
+describe("objectKey", () => {
+  test("joins plain type and id with a colon without escaping valid Unicode", () => {
+    for (const id of ["plain-id", "", "café", "id😀tail", "id\ufffdtail", "id\u007ftail"]) {
+      expect(objectKey("project", id)).toBe(`project:${id}`);
+    }
+  });
+
+  test("JSON-encodes special id parts and preserves their exact values", () => {
+    const ids = ["id:tail", 'id"tail', "id\\tail", "id\ud800tail", "id\udc00tail"];
+    for (let control = 0; control <= 0x1f; control++) {
+      ids.push(`id${String.fromCharCode(control)}tail`);
+    }
+    for (const id of ids) {
+      const key = objectKey("project", id);
+      expect(key).toBe(`project:${JSON.stringify(id)}`);
+      expect(JSON.parse(key.slice(key.indexOf(":") + 1))).toBe(id);
+    }
+  });
+
+  test("keeps unpaired surrogates distinct from the replacement character", () => {
+    expect(objectKey("project", "id\ud800tail")).not.toBe(objectKey("project", "id\ufffdtail"));
+  });
+
+  test("refuses a type containing a colon", () => {
+    expect(() => objectKey("bad:type", "id")).toThrow(TypeError);
+    expect(() => objectKey("bad:type", "id")).toThrow('Type "bad:type" must not contain a colon.');
+  });
+});
 
 for (const driver of ["better-sqlite3", "bun"] as const) {
   describe(`SQLite index (${driver})`, () => {

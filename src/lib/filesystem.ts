@@ -1,15 +1,37 @@
 import path from "node:path";
+import { isValidId } from "./base-schema.ts";
 import { FrameworkError } from "./errors.ts";
 import type { ObjectRegistry } from "./registry.ts";
 import { SqliteProcessLock } from "./sqlite/process-lock.ts";
 import type { BaseObject, FrameworkConfig, SourceDocument, SyncIssue } from "./types.ts";
-import { checksum } from "./vault/checksums.ts";
 import { MarkdownCodec } from "./vault/codec.ts";
 import { ConfinedFilesystem } from "./vault/confined-filesystem.ts";
 import { Vault, type VaultDocument } from "./vault/vault.ts";
 
 export { checksum } from "./vault/checksums.ts";
-export const objectKey = (type: string, id: string): string => JSON.stringify([type, id]);
+/**
+ * Joins type and id with a colon; the type must not contain a colon or a TypeError is thrown.
+ * The id is verbatim unless it contains a colon, quote, backslash, U+0000–U+001F control
+ * character, or unpaired UTF-16 surrogate, in which case the id is JSON-encoded.
+ * Escaping unpaired surrogates prevents SQLite's UTF-8 TEXT binding from replacing them.
+ * A plain id has no quote, so a leading quote identifies JSON; split on the first colon.
+ */
+export const objectKey = (type: string, id: string): string => {
+  if (type.includes(":"))
+    throw new TypeError(`Type ${JSON.stringify(type)} must not contain a colon.`);
+  for (const character of id) {
+    const unit = character.charCodeAt(0);
+    if (
+      character === ":" ||
+      character === '"' ||
+      character === "\\" ||
+      unit <= 0x1f ||
+      (character.length === 1 && unit >= 0xd800 && unit <= 0xdfff)
+    )
+      return `${type}:${JSON.stringify(id)}`;
+  }
+  return `${type}:${id}`;
+};
 
 export interface ScanResult {
   readonly documents: readonly SourceDocument[];
@@ -40,7 +62,26 @@ export class FileStore {
     for (const definition of registry.definitions) {
       const codec = new MarkdownCodec<BaseObject>(
         {
-          decode: (value) => registry.decode(definition.name, value),
+          decode: (value) => {
+            if (
+              value !== null &&
+              typeof value === "object" &&
+              "id" in value &&
+              typeof value.id === "string" &&
+              !isValidId(value.id)
+            )
+              throw new FrameworkError(
+                "VALIDATION",
+                "Object id must be a portable lowercase filename.",
+              );
+            const object = registry.decode(definition.name, value);
+            if (!isValidId(object.id))
+              throw new FrameworkError(
+                "VALIDATION",
+                "Object id must be a portable lowercase filename.",
+              );
+            return object;
+          },
           encode: (header) => registry.encode(definition.name, header),
         },
         { maxFileBytes: config.sync.maxFileBytes },
@@ -175,7 +216,7 @@ export class FileStore {
     if (scan.documents.some((document) => document.object.id === object.id))
       throw new FrameworkError("ALREADY_EXISTS", `${type} id already exists: ${object.id}`);
     signal?.throwIfAborted();
-    const relative = `${definition.directory}/id-${checksum(JSON.stringify(object.id))}.md`;
+    const relative = `${definition.directory}/${object.id}.md`;
     // Publish the validated snapshot captured before asynchronous identity discovery.
     await this.files.write(relative, element.raw, { expectedChecksum: null }, signal);
     return this.source(type, vault.parse(relative, element.raw));

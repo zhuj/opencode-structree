@@ -19,13 +19,17 @@ export interface McpToolOptions {
 }
 
 const IdInput = Schema.Struct({
-  id: Schema.NonEmptyString.annotate({ description: "Object identifier. Must not be empty." }),
+  id: Schema.NonEmptyString.annotate({
+    description: "Object identifier. Must be a portable file name of at most 200 UTF-8 bytes.",
+  }),
 });
 // An empty Effect Struct also accepts non-objects; a string-keyed Never record accepts only {}.
 const EmptyInput = Schema.Record(Schema.String, Schema.Never);
 const NonnegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const DeleteInput = Schema.Struct({
-  id: Schema.NonEmptyString.annotate({ description: "Object identifier. Must not be empty." }),
+  id: Schema.NonEmptyString.annotate({
+    description: "Object identifier. Must be a portable file name of at most 200 UTF-8 bytes.",
+  }),
   expectedChecksum: Schema.NonEmptyString.annotate({
     description:
       "Checksum returned by the latest get/list/create/update; prevents overwriting a newer revision.",
@@ -130,7 +134,7 @@ const DefinitionsInput = Schema.Struct({
 });
 /** The workflow every type shares, published once so each tool can point at it. */
 const DEFINITION_GUIDANCE = [
-  "Object ids are stable, unique within their type, and are the only handle: the file name is a hash of the id.",
+  "Object ids are stable, unique within their type, and are the only handle: the file name is the id, an id is always lowercase, and the scanner renames a file whose name does not match its id.",
   "Use the type's get tool for a known id; do not list a whole type to find one object.",
   "Update and delete replace the whole revision and require the checksum returned by the latest get, list, create or update.",
   "Timestamps are supplied by the caller; the id and createdAt are immutable.",
@@ -255,11 +259,12 @@ export function registerObjectTools(
     server.registerTool(
       `${definition.name}_create`,
       {
-        description: `Create one ${definition.name} Markdown file. Supply all object fields, including timestamps and nullable fields. Identifiers must not be empty. Omitted body defaults to an empty string. ${definition.description} ${WORKFLOW_CLAUSE}`,
+        description: `Create one ${definition.name} Markdown file. Supply all object fields, including timestamps and nullable fields. Identifiers are lowercased and must be portable file names. Omitted body defaults to an empty string. ${definition.description} ${WORKFLOW_CLAUSE}`,
         inputSchema: input.schema(
           Schema.Struct({
             object: definition.schema.annotate({
-              description: "The complete object. Identifiers must not be empty.",
+              description:
+                "The complete object. Identifiers are lowercased and must be portable file names.",
             }),
             body: Schema.optionalKey(Schema.String),
           }),
@@ -297,14 +302,16 @@ export function registerObjectTools(
     server.registerTool(
       `${definition.name}_update`,
       {
-        description: `Replace a complete ${definition.name} object and Markdown body. The identifier and createdAt timestamp are immutable. Identifiers must not be empty. Supply the latest checksum and your updatedAt timestamp. ${WORKFLOW_CLAUSE}`,
+        description: `Replace a complete ${definition.name} object and Markdown body. The identifier and createdAt timestamp are immutable. Identifiers are lowercased and must be portable file names. Supply the latest checksum and your updatedAt timestamp. ${WORKFLOW_CLAUSE}`,
         inputSchema: input.schema(
           Schema.Struct({
             id: Schema.NonEmptyString.annotate({
-              description: "Object identifier. Must not be empty.",
+              description:
+                "Object identifier. Must be a portable file name of at most 200 UTF-8 bytes.",
             }),
             object: definition.schema.annotate({
-              description: "The complete object. Identifiers must not be empty.",
+              description:
+                "The complete object. Identifiers are lowercased and must be portable file names.",
             }),
             body: Schema.String,
             expectedChecksum: Schema.NonEmptyString.annotate({
@@ -395,7 +402,7 @@ export function registerObjectTools(
     "objects_search",
     {
       description:
-        "Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.",
+        "Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.",
       inputSchema: input.schema(searchInput),
       outputSchema: SearchOutput,
       annotations: readOnly,

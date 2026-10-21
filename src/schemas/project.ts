@@ -1,18 +1,19 @@
 import { Schema } from "effect";
-import { BaseObjectSchema, IDSchema } from "./base";
+import { BaseObjectSchema, idSchema } from "./base";
 
-export const ProjectIDSchema = IDSchema.annotate({
-  description: "Project identifier. Must not be empty.",
-});
-export const ProjectGoalIDSchema = IDSchema.annotate({
-  description: "Project goal identifier. Must not be empty.",
-});
+export const ProjectIDSchema = idSchema(
+  "Project identifier. Must be a portable file name of at most 200 UTF-8 bytes.",
+);
+export const ProjectGoalIDSchema = idSchema(
+  "Project goal identifier. Must be a portable file name of at most 200 UTF-8 bytes.",
+);
 
 export const ProjectSchema = Schema.Struct({
   ...BaseObjectSchema.fields,
   relations: Schema.Struct({
     partOf: Schema.NullOr(ProjectIDSchema).annotate({
-      description: "Optional parent project identifier. Must not be empty.",
+      description:
+        "Optional parent project identifier. Must be a portable file name of at most 200 UTF-8 bytes.",
     }),
   }).annotate({ description: "Project relationships, including an optional parent project." }),
 });
@@ -20,11 +21,12 @@ export const ProjectSchema = Schema.Struct({
 export const ProjectGoalSchema = Schema.Struct({
   ...BaseObjectSchema.fields,
   relations: Schema.Struct({
-    project: ProjectIDSchema.annotate({
-      description: "Required owning project identifier. Must not be empty.",
-    }),
+    project: idSchema(
+      "Required owning project identifier. Must be a portable file name of at most 200 UTF-8 bytes.",
+    ),
     partOf: Schema.NullOr(ProjectGoalIDSchema).annotate({
-      description: "Optional parent project goal identifier. Must not be empty.",
+      description:
+        "Optional parent project goal identifier. Must be a portable file name of at most 200 UTF-8 bytes.",
     }),
   }).annotate({
     description: "Project goal relationships, including its project and optional parent goal.",

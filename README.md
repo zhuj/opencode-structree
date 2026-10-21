@@ -62,7 +62,9 @@ bun src/cli.ts sync --config object-mcp.config.json
 bun src/cli.ts status --config object-mcp.config.json
 ```
 
-Both commands perform startup reconciliation. Only `sync` calls `prepareEmbeddings()`; `status` does not prepare the provider, because it is a read-only report. They print JSON and exit with code `2` when the reconciliation reports source or embedding issues. They never rewrite source files. The `status` command prints the same report as the `objects_status` tool, and the `sync` command prints the last synchronization report; both bound their issue list to 50 entries and add the totals and the per-code counts described under [the tools](#the-12-schemas-and-their-tools).
+The MCP server starts the watcher and first reconciliation during framework creation but no longer waits for that pass before answering requests. A search issued while the index is being built may find nothing; `objects_status` reports `syncing: true` and `lastSync: null` until a completed report exists. Create indexes its own object immediately, so create followed by search still works while existing files await discovery. A deferred startup failure is reported through the framework's error channel without stopping the server. Reconciliation is the repair path, not a read-only call: it can rename a discovered file to match its id. These renames can happen after the server starts answering. See [decision 0015](docs/decisions/0015-defer-the-startup-reconciliation.md).
+
+Both diagnostic commands still wait for startup reconciliation, so their JSON reports describe a completed pass. Only `sync` calls `prepareEmbeddings()`; `status` does not prepare the provider. The report itself is read-only, but either command's startup reconciliation can rename source files. They exit with code `2` when the reconciliation reports source or embedding issues. The `status` command prints the same report as the `objects_status` tool, and the `sync` command prints the last synchronization report; both bound their issue list to 50 entries and add the totals and the per-code counts described under [the tools](#the-12-schemas-and-their-tools). Library creation still waits by default; only a caller that explicitly sets `waitForStartup: false` defers the first pass.
 
 ## Build and OpenCode V2
 
@@ -84,17 +86,18 @@ Open or reload this repository as an OpenCode V2 project, then use `/mcps` to fi
 
 ## Storage layout and local overrides
 
-The default layout keeps every path the framework owns under `.local/.structree/` in the project root:
+The default project layout keeps authoritative sources, the derived search index, and local configuration under `.local/.structree/` in the project root:
 
 | Path | Role |
 | --- | --- |
 | `.local/.structree/objects` | Authoritative Markdown source root. Each registry definition selects a distinct relative subtree below it. |
 | `.local/.structree/.cache/index.sqlite` | Rebuildable search database with object metadata, FTS5 data, and `sqlite-vec` embedding rows. |
-| `.local/.structree/.cache/models` | Verified snapshots of the pinned ONNX model. |
 | `.local/.structree/objects/.object-mcp-lock.sqlite` | Shared coordination lock for every instance using that source root. It holds no object data. |
 | `.local/.structree/config.yaml` | Optional local override file, read automatically when it exists. |
 
 `.local/` is ignored by Git, so the object data and the derived index no longer appear as untracked files in `git status`.
+
+Verified ONNX snapshots live outside the project by default. `embeddings.cacheDir` is `~/.cache/onnx/models`, or `$XDG_CACHE_HOME/onnx/models` when `XDG_CACHE_HOME` is an absolute path; a relative value of that environment variable is ignored. Every project on the machine using this user cache shares the snapshot at `<cacheDir>/<model>/<revision>`. An explicit `cacheDir` still overrides the default, and the cache must remain outside the object directory. See [configuration](docs/configuration.md#onnx-provider) and [decision 0014](docs/decisions/0014-keep-model-snapshots-in-the-user-cache.md).
 
 Changing the configuration never moves existing objects: a source root is selected by configuration, and objects stay where they were written. The repository previously held a legacy `objects/` directory and a legacy `.object-mcp/` index; neither is used by the current configuration, and no migration code exists to move one to the other.
 
@@ -217,7 +220,11 @@ Every registration produces `_create`, `_get`, `_update`, `_delete`, and `_list`
 
 The shared tools are `objects_search`, `objects_resync`, `objects_status`, and `objects_definitions`. The last returns JSON schemas derived from the Effect definitions, including descriptions and required keys.
 
-`objects_definitions` takes an optional `type` argument. Without it, it returns every registered type; with it, only that one; an unknown type fails with the `UNKNOWN_TYPE` error. Its output also carries a `guidance` array that states the object model and the intended workflow once, so a model does not have to infer them: the ids are stable and unique within their type and the file name is a hash of the id, `get` answers a known id, update and delete replace the whole revision and need the checksum from the latest get, list, create or update, the timestamps are supplied by the caller while the id and `createdAt` are immutable, relation targets are not validated as described below, `description` is a one-line summary and the body is the Markdown content, and search is not exhaustive. Every per-type tool description ends with "See objects_definitions for the object model and workflow."
+`objects_definitions` takes an optional `type` argument. Without it, it returns every registered type; with it, only that one; an unknown type fails with the `UNKNOWN_TYPE` error. Its output also carries a `guidance` array that states the object model and the intended workflow once. Its naming guidance is:
+
+> Object ids are stable, unique within their type, and are the only handle: the file name is the id, an id is always lowercase, and the scanner renames a file whose name does not match its id.
+
+The remaining guidance states that `get` answers a known id, update and delete replace the whole revision and need the checksum from the latest get, list, create or update, the timestamps are supplied by the caller while the id and `createdAt` are immutable, relation targets are not validated as described below, `description` is a one-line summary and the body is the Markdown content, and search is not exhaustive. Every per-type tool description ends with "See objects_definitions for the object model and workflow."
 
 The generated input schemas state the limits the runtime enforces. The list `limit` is an integer from 1 to 1000 and defaults to 50, the list `offset` is 0 or more and defaults to 0, and the search `topN` is an integer from 1 to the configured `search.maxTopN`, which is 100 by default, and defaults to the configured `search.defaultTopN`, which is 10 by default. Each per-type list tool takes an optional `includeBody` boolean that defaults to true; with it false the returned objects carry identity, title, path and checksum only, which is the cheap way to discover the contents of a type.
 
@@ -229,7 +236,7 @@ Its issue list is bounded to the first 50 entries and carries `issuesTotal`, `is
 
 The domain schemas preserve all required fields from the supplied specification. Nullable fields require explicit `null`; canonical objects include every required array and nested commitment struct. `Feature` has no `partOf`; there is no `belongsTo` or separate `Acceptance` entity. See [the field and relationship reference](docs/core-schemas.md).
 
-Schema validation checks shape and refuses empty identifiers with `VALIDATION` before any target is considered: an empty object id, owner identifier such as `relations.project = ""`, or identifier inside a relation array is invalid. A non-empty identifier naming a nonexistent target is still stored as written. Validation does not check reference existence, inverse relationships, duplicate reference IDs, or dependency/hierarchy cycles. The filesystem layer separately needs one unambiguous `(type,id)` to address a stored object. Conflicting files with the same identity are reported and excluded from indexing; identical ID strings in different registered types are allowed.
+Schema validation checks shape and the [portable stored-id domain](docs/core-schemas.md#shared-fields) with `VALIDATION` before any target is considered. A caller may send an id in any case: at the very start of create, get, update and delete, the framework lowercases the object id and every relation identifier below the tool boundary, then checks the lowercased form against the domain. A create with `MyThing` stores `mything`; a get with `MyThing` finds it. A valid identifier naming a nonexistent target is still stored after normalization. Validation does not check reference existence, inverse relationships, duplicate reference IDs, or dependency/hierarchy cycles. The filesystem layer separately needs one unambiguous `(type,id)` to address a stored object. Conflicting files with the same identity are reported and excluded from indexing; identical ID strings in different registered types are allowed. Within a type, ids differing only in case are one id, so a second create fails with `ALREADY_EXISTS` on every filesystem.
 
 ## Using structree from an agent
 
@@ -269,7 +276,7 @@ Long-form content belongs here.
 
 All timestamps are caller-supplied. An update is a full replacement, including its body; it is not a deep partial patch. The framework keeps `id` and `createdAt` immutable and requires the current checksum on update/delete. Set `retiredAt` explicitly when retirement is desired; delete performs an actual file deletion. A retired object remains listed and searchable; callers exclude it by checking `retiredAt`. This publishes existing listing and search behavior, not a behavior change.
 
-Framework-created filenames use a SHA-256 hash of the JSON-encoded ID. This permits non-empty string IDs without turning them into paths. Human-created `.md` filenames and subdirectories are supported; an external rename updates the indexed path without recomputing unchanged vectors. Changing an object's `name` does not rename its file.
+The file name is the id: a created object is stored at `<type directory>/<id>.md`. During reconciliation, the scanner renames a discovered file whose base name is not `<id>.md`, in its existing directory, and updates the indexed path. File content is the source of truth, so a hand-renamed file is renamed back to match its id. Subdirectories remain supported because only the base name is corrected. A filesystem that folds case or normalizes names may spell the name differently while the target still names the same file. The scanner accepts that spelling, leaves the file unchanged and indexed at its actual path, and reports no issue. A rename never overwrites: only a different file holding the target name is a conflict, excluding the object with `RENAME_CONFLICT` and leaving both files unchanged. A resync can therefore rename files and is not read-only. Changing an object's `name` does not rename its file. See [decision 0013](docs/decisions/0013-name-the-file-after-the-id.md).
 
 Creating a new ID requires its type directory to have no invalid or conflicting source files, so the store can establish that the identity is unused. Existing valid objects can still be read, updated, or deleted while other files are being repaired.
 
@@ -309,7 +316,7 @@ The tool's exact query, type-filter and mode descriptions are:
 
 The search tool itself states:
 
-> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
+> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
 
 Identical extracted strings are deduplicated before folding; case variants can count separately against the 128-token limit. Overflow currently surfaces as `INTERNAL`, not `VALIDATION`. Two words can match anywhere, not necessarily as a phrase. `reconcil*` searches the token `reconcil`, and `cafe` matches `café`. Hybrid still invokes its provider before lexical evaluation. A provider failure keeps the `EMBEDDINGS_UNAVAILABLE` code and its cause, and its message ends with `Search with mode "fulltext" to query without embeddings.` Embedding failures during indexing leave full-text search available and mark affected objects pending. A configured provider or a snapshot's presence does not guarantee lazy model loading succeeds.
 
@@ -339,10 +346,12 @@ SQLite stores:
 
 | Derived data | Identity/content |
 | --- | --- |
-| `object_meta` | JSON-encoded `(type,id)` key, ID, type, path, checksum, canonical object JSON, raw file, body, embedding freshness metadata. |
+| `object_meta` | `type:id` key with the id JSON-encoded only when needed, ID, type, path, checksum, canonical object JSON, raw file, body, embedding freshness metadata. |
 | `object_fts` | FTS5 search projection synchronized with object metadata. |
 | `embeddings` | Primary key `(object_key, chunk_index)`, float32 embedding, source text, code-point offsets; joined to object checksum and active model/chunk fingerprint. |
 | Index state/issues | Generation and last reconciliation issues. |
+
+The cache key joins the type and id with a colon, for example `project:structree-initial`. The type must not contain a colon; registered type names are snake_case and never contain one, while the public `objectKey` function throws `TypeError` for a type containing a colon. The id is used verbatim unless it contains a colon, a double quote, a backslash, a control character (U+0000 to U+001F), or an unpaired UTF-16 surrogate; then the id part is `JSON.stringify(id)`. A plain id part never contains a quote, so a leading double quote identifies a JSON-encoded id part and the pair is recoverable by splitting on the first colon. The framework never decodes the key: it reads the type from `object_type` and the exact id from `json`, because SQLite's UTF-8 TEXT binding normalizes an unpaired surrogate to U+FFFD while JSON preserves it. See [decision 0012](docs/decisions/0012-use-a-type-id-cache-key.md).
 
 Embedding index `0` represents the **whole raw file, including frontmatter**. Positive indices cover the full file in 1,200-code-point chunks by default, with 120-code-point overlap: **10%**, a 1,080-code-point step. The last chunk includes the end of the file.
 
@@ -356,7 +365,7 @@ The OpenAI provider supports endpoint/model/dimensions configuration, batching, 
 
 The `@local/object-mcp/sqlite` export exposes `Database`, `Table`, `IndexedTable`, `Column`, `Filter`, `Migrator`, `FTSIndex`, `VectorIndex`, prepared mutations, and `SqliteProcessLock`. `columnsFromEffect(schema)` derives validated SQLite converters from Effect's canonical JSON codecs. `examples/database.ts` demonstrates a typed plugin cache with optional provider injection.
 
-The framework uses these classes for metadata, chunk rows, generation state, and reconciliation issues. Tables support custom and composite primary keys, so existing v2 caches retain their `(object_key, chunk_index)` rows and stored embeddings. Migrations are additive and reject incompatible layouts without dropping columns or inventing values. Prepared indexed operations compute embeddings before a short, revision-guarded SQL commit.
+The framework uses these classes for metadata, chunk rows, generation state, and reconciliation issues. Tables support custom and composite primary keys; embedding rows retain the `(object_key, chunk_index)` shape. The new key encoding bumps the cache schema from version 2 to 3. Replace the derived cache file rather than migrate it; the next sync rebuilds the index and re-embeds the corpus when embeddings are enabled. A stale cache file is refused with "use a fresh cache file and resync the Markdown sources". The table migrator is additive only and refuses a changed primary key without dropping columns or inventing values. Prepared indexed operations compute embeddings before a short, revision-guarded SQL commit.
 
 See [the database guide](docs/database.md) for the supplied-file mapping, API examples, migration rules, cancellation, driver capabilities, and transaction boundaries.
 

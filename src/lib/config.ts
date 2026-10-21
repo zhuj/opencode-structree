@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import { Schema } from "effect";
 import { parse as parseYaml } from "yaml";
@@ -101,6 +102,15 @@ export const FrameworkConfigSchema = Schema.Struct({
   mcp: Schema.Struct({ inputRepair: McpInputRepairConfigSchema }),
 });
 
+function defaultModelCacheDirectory(): string {
+  const xdgCacheHome = process.env.XDG_CACHE_HOME;
+  return path.join(
+    xdgCacheHome && path.isAbsolute(xdgCacheHome) ? xdgCacheHome : path.join(homedir(), ".cache"),
+    "onnx",
+    "models",
+  );
+}
+
 const onnxDefaults: Extract<EmbeddingConfig, { provider: "onnx" }> = {
   provider: "onnx",
   model: "Xenova/multilingual-e5-small",
@@ -108,7 +118,9 @@ const onnxDefaults: Extract<EmbeddingConfig, { provider: "onnx" }> = {
   dimensions: 384,
   dtype: "q8",
   device: "cpu",
-  cacheDir: `${LOCAL_STATE_RELATIVE_DIRECTORY}/.cache/models`,
+  get cacheDir() {
+    return defaultModelCacheDirectory();
+  },
   localFilesOnly: false,
   queryPrefix: "query: ",
   documentPrefix: "passage: ",

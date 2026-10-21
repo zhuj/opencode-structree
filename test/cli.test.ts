@@ -87,6 +87,117 @@ describe("CLI argument and help contracts", () => {
 });
 
 describe("CLI status and sync contracts", () => {
+  test("serve answers status while startup is blocked, but diagnostic commands wait", async () => {
+    const { directory, config } = await workspace();
+    const preload = path.join(directory, "hold-startup.ts");
+    await writeFile(
+      preload,
+      `import { FileStore } from ${JSON.stringify(path.join(project, "src/lib/filesystem.ts"))};
+const scan = FileStore.prototype.scan;
+FileStore.prototype.scan = async function (...args) {
+  const keepAlive = setInterval(() => {}, 60_000);
+  const released = new Promise(resolve => process.once("SIGUSR2", resolve));
+  process.stderr.write("STARTUP_HELD\\n");
+  await released;
+  clearInterval(keepAlive);
+  return scan.apply(this, args);
+};`,
+    );
+    const server = Bun.spawn([bun, "--preload", preload, cliScript, "serve", "--config", config], {
+      cwd: directory,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const reader = server.stdout.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    let serverReleased = false;
+    const request = async (id: number, method: string, params: unknown) => {
+      server.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+      await server.stdin.flush();
+      while (true) {
+        const newline = buffered.indexOf("\n");
+        if (newline >= 0) {
+          const response = JSON.parse(buffered.slice(0, newline)) as {
+            id?: number;
+            error?: unknown;
+            result: { structuredContent: Record<string, unknown> };
+          };
+          buffered = buffered.slice(newline + 1);
+          if (response.id === id) {
+            expect(response.error).toBeUndefined();
+            return response.result;
+          }
+        } else {
+          const chunk = await reader.read();
+          if (chunk.done) throw new Error("Server closed before answering");
+          buffered += decoder.decode(chunk.value, { stream: true });
+        }
+      }
+    };
+    try {
+      const startup = server.stderr.getReader();
+      expect(decoder.decode((await startup.read()).value)).toContain("STARTUP_HELD");
+      startup.releaseLock();
+      await request(1, "initialize", {
+        protocolVersion: "2025-11-25",
+        clientInfo: { name: "deferred-startup-test", version: "1.0.0" },
+        capabilities: {},
+      });
+      server.stdin.write(
+        `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`,
+      );
+      const status = await request(2, "tools/call", { name: "objects_status", arguments: {} });
+      expect(status.structuredContent).toMatchObject({ syncing: true, lastSync: null });
+      server.kill("SIGUSR2");
+      serverReleased = true;
+      let requestId = 3;
+      while (
+        (await request(requestId++, "tools/call", { name: "objects_status", arguments: {} }))
+          .structuredContent.syncing
+      ) {
+        // Observe completion through the server's public status surface, without sleeping.
+      }
+      for (const command of ["sync", "status"]) {
+        const diagnostic = Bun.spawn(
+          [bun, "--preload", preload, cliScript, command, "--config", config],
+          {
+            cwd: directory,
+            stdout: "pipe",
+            stderr: "pipe",
+          },
+        );
+        try {
+          const started = diagnostic.stderr.getReader();
+          expect(decoder.decode((await started.read()).value)).toContain("STARTUP_HELD");
+          started.releaseLock();
+          expect(diagnostic.exitCode).toBeNull();
+          diagnostic.kill("SIGUSR2");
+          const stdout = await new Response(diagnostic.stdout).text();
+          expect(await diagnostic.exited).toBe(0);
+          const report = JSON.parse(stdout) as Record<string, unknown>;
+          if (command === "sync") expect(report).toMatchObject({ scanned: 0, issues: [] });
+          else
+            expect(report).toMatchObject({
+              syncing: false,
+              dirty: false,
+              lastSync: { scanned: 0 },
+            });
+        } finally {
+          if (diagnostic.exitCode === null) diagnostic.kill();
+          await diagnostic.exited;
+        }
+      }
+    } finally {
+      if (!serverReleased) server.kill("SIGUSR2");
+      await server.stdin.end();
+      await server.exited;
+      reader.releaseLock();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   test("the status command prints the index, registry, and embedding state as JSON", async () => {
     const { directory, config } = await workspace();
     try {

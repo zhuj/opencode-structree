@@ -124,14 +124,41 @@ keyed object:
 
 ```ts
 // For a table configured with primaryKey: ["object_key", "chunk_index"]:
-const key = JSON.stringify(["project", "project-1"]);
+const key = "project:structree-initial";
 embeddingTable.read([key, 0]);
 embeddingTable.read({ object_key: key, chunk_index: 0 });
 ```
 
-`IndexedTable` requires one string document key. The object cache already uses
-the lossless `JSON.stringify([type, id])` encoding. Its chunk storage remains a
-separate composite-key table.
+`IndexedTable` requires one string document key. The object cache joins the type
+and id with a colon, for example `project:structree-initial`. The type must not
+contain a colon: registered type names are snake_case and never contain one,
+while a caller of the public `objectKey` function gets a `TypeError` for a type
+containing a colon.
+
+The id part is used verbatim unless it contains a colon, a double quote, a
+backslash, a control character (U+0000 to U+001F), or an unpaired UTF-16 surrogate.
+In those cases the id part is `JSON.stringify(id)`. A plain id part never contains
+a quote, so a JSON-encoded id part is recognizable by its leading double quote;
+the pair is recoverable by splitting on the first colon. The framework never
+decodes the key: the type comes from `object_type` and the exact id from `json`.
+SQLite's UTF-8 TEXT binding normalizes an unpaired surrogate to U+FFFD, while
+the JSON column preserves it. Chunk storage remains a separate composite-key
+table. See [decision 0012](decisions/0012-use-a-type-id-cache-key.md).
+
+This cache-key encoding is unchanged by the file naming contract. The object
+framework lowercases object and relation ids at the start of create, get, update
+and delete. A caller may send an id in any case; its lowercased form is checked
+against the [portable stored-id domain](core-schemas.md#shared-fields), which
+excludes separators, control characters and unpaired surrogates. Created files use
+`<type directory>/<id>.md`, not the cache key. Reconciliation corrects a differing
+base name in the file's existing directory and updates the indexed path. A
+filesystem that folds case or normalizes names may spell the name differently
+while the target still names the same file. That spelling is accepted: the file
+stays unchanged and indexed at its actual path, with no issue reported. Only a
+different file holding the target name is a conflict: both files remain unchanged
+and the object is excluded with `RENAME_CONFLICT`. Nothing is overwritten.
+Resync can rename files as well as update derived state. See
+[decision 0013](decisions/0013-name-the-file-after-the-id.md).
 
 Effect codecs validate and convert values in both directions. Dates use ISO text,
 booleans use `0`/`1`, and structured values use JSON text. Optional and nullable
@@ -340,12 +367,14 @@ metadata.fingerprint; // effective fingerprint: stored and filtered on
 
 ## Migration and compatibility
 
-The cache retains schema version **2** and its existing object/chunk identities.
-Opening an earlier v2 cache adds the abstraction's revision/repair support without
-discarding metadata or embeddings. Startup FTS repair covers missing, duplicate,
-and orphan identities. A changed FTS layout or tokenizer requires an explicit
-rebuild; initialization reports incompatible configuration instead of silently
-using an old layout.
+The cache uses schema version **3** for the new type-and-id key encoding. The
+derived cache is rebuildable: replace the existing version-2 cache file rather
+than migrate it. The next sync rebuilds the index and re-embeds the corpus when
+embeddings are enabled. A stale cache file is refused with the message
+"use a fresh cache file and resync the Markdown sources". Startup FTS repair
+covers missing, duplicate, and orphan identities. A changed FTS layout or
+tokenizer requires an explicit rebuild; initialization reports incompatible
+configuration instead of silently using an old layout.
 
 The FTS compatibility check compares the declared columns, the tokenizer, and the
 content model. A pre-existing index that stores its content in another table
@@ -362,9 +391,10 @@ invent backfill values. An explicit application migration decides how to handle
 such changes. The object cache also refuses unrelated nonempty databases and
 unsupported cache versions before claiming ownership.
 
-The native integration suite loads an independent fixture of the previous
-schema, including stored embeddings, before opening it through the new classes.
-See `test/cache-abstraction.test.ts` and `test/fixtures/cache-v2.sql`.
+The version-2 to version-3 change does not use `Migrator.sync`: its additive
+rules refuse a changed primary key. See
+[decision 0012](decisions/0012-use-a-type-id-cache-key.md) for the replacement
+policy and key-encoding trade-offs.
 
 ## Filters and driver capabilities
 

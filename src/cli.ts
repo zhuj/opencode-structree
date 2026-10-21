@@ -20,6 +20,7 @@ async function main(): Promise<void> {
     throw new Error("Expected --config <filename>.");
   const config = await loadConfig(tail[1] ?? "object-mcp.config.json");
   const framework = await createFramework({
+    waitForStartup: command !== "serve",
     config: {
       ...config,
       sync: { ...config.sync, watch: command === "serve" && config.sync.watch },

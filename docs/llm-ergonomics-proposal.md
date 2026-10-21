@@ -66,10 +66,12 @@ thing to isolate, ahead of any change to the library.
 `feature_create` with `relations.project: "no-such-project"` was accepted and stored, with no
 issue and no warning.
 
-The current identifier rule refuses an empty object, owner or relation-array
-identifier with `VALIDATION` before any target is considered. This does not add
-target-existence validation: the non-empty missing target in this finding is
-still stored as written. See [decision 0011](decisions/0011-publish-the-observed-surface-and-reject-empty-identifiers.md).
+The current identifier rule accepts caller ids in any case, lowercases them,
+then refuses an invalid object, owner or relation-array identifier with
+`VALIDATION` before any target is considered. This does not add
+target-existence validation: a valid missing target is still stored after
+lowercase normalization. See [decision 0013](decisions/0013-name-the-file-after-the-id.md)
+for the portable stored-id domain applied after lowercasing below the tool boundary.
 
 The first version of this document called that a defect. It is not. `docs/core-schemas.md`
 states that "Required owner IDs do not imply target existence, inverse consistency, or
@@ -260,11 +262,14 @@ rejected after it.
 
 ### F13. The object model and the intended workflow are not stated in the surface
 
-The surface is 64 tools, five per type for twelve types, plus search, resync, status and
-definitions, and nothing states the model: that the id is the stable handle and the file name
-is a SHA-256 hash of the JSON-encoded id, that the description is a separate field from the
-Markdown body, that ids must be unique within a type, that relation targets are not
-validated, or that a natural authoring order exists.
+The observed surface was 64 tools, five per type for twelve types, plus search, resync,
+status and definitions, with no shared statement of the object model or authoring order.
+The current naming guidance in `objects_definitions` is:
+
+> Object ids are stable, unique within their type, and are the only handle: the file name is the id, an id is always lowercase, and the scanner renames a file whose name does not match its id.
+
+The shared guidance also separates description from Markdown body and states that
+relation targets are not validated.
 
 The first version proposed a new `objects_guide` tool. The review's alternative is better:
 the guidance belongs in the existing descriptions and in the existing definitions endpoint,
@@ -351,10 +356,16 @@ The findings come from the live MCP server of this repository, using temporary p
 that were created and then deleted, and from the tool schemas as a client sees them. The vault
 was returned to its 275 objects afterwards.
 
-Two observations that look like defects but are not: an id containing `../../etc/passwd` is
-stored verbatim and is harmless, because the file name is a hash of the JSON-encoded id; and
-an id with spaces and mixed case is accepted, because ids are free-form strings and the hash
-keeps the path safe either way. Both are worth documenting rather than changing.
+The original probes included a separator-bearing id and a mixed-case id. They
+do not describe the current contract: callers may send ids in any case, and
+create, get, update and delete lowercase object and relation identifiers before
+checking the portable stored-id domain, which rejects separators. The file name
+is `<id>.md`, corrected by reconciliation when it disagrees with the content.
+A filesystem that folds case or normalizes names may spell the name differently
+while the target still names the same file; that spelling is accepted, the file
+stays unchanged and indexed at its actual path, and no issue is reported. Only a
+different file holding the target name is a conflict: the object is excluded with
+`RENAME_CONFLICT` and nothing is overwritten. See [decision 0013](decisions/0013-name-the-file-after-the-id.md).
 
 One finding was corrected inside the vault itself. The `onnx-integration-test` unit-test object
 claimed to verify the `openai-embedding-request` scenario while the test exercises the local
@@ -377,7 +388,7 @@ the server's own behavior is the opposite of what was suspected.
 
 | Finding | Status | What the implementation does |
 | --- | --- | --- |
-| F1 | `not applicable` | The permissiveness is a documented design choice and stays one: relation targets are still not validated for existence; empty identifiers are refused before any target is considered. The surface states it in the `guidance` array of `objects_definitions`: "Relation targets are not validated: a link to an object that does not exist is stored as written." Link diagnostics remain an application-boundary option and are not implemented. |
+| F1 | `not applicable` | Relation targets are still not validated for existence; invalid identifiers are refused before any target is considered, and valid missing targets are stored after lowercase normalization. The surface states it in the `guidance` array of `objects_definitions`: "Relation targets are not validated: a link to an object that does not exist is stored as written." Link diagnostics remain an application-boundary option and are not implemented. |
 | F2 | `fixed` | The list and search input schemas are built per facade. The list `limit` is an integer from 1 to 1000 and defaults to 50, the list `offset` is 0 or more and defaults to 0, and the search `topN` is an integer from 1 to the configured `search.maxTopN` and defaults to the configured `search.defaultTopN`. A facade that exposes no search configuration advertises the built-in defaults, 100 and 10. |
 | F3 | `fixed` | The `mode` description states that the default is hybrid when an embedding provider is configured and full-text otherwise. A provider failure keeps the `EMBEDDINGS_UNAVAILABLE` code and its cause, and the message ends with `Search with mode "fulltext" to query without embeddings.` An explicitly requested semantic or hybrid search is still never downgraded to full-text. |
 | F4 | `fixed` | The status report lists at most 50 issues and adds `issuesTotal`, `issuesTruncated` and `issuesByCode`, a count per issue code; `lastSync` carries the same four fields. The stored report is not mutated, so the report returned by `objects_resync` still lists every issue. The 132,077-character status response measured in this document is the reason for the bound. |
@@ -389,7 +400,7 @@ the server's own behavior is the opposite of what was suspected.
 | F10 | `corrected` | Nothing was changed in the library. The server's MCP boundary builds its schema and its decoder with `onExcessProperty: "error"`, the repair layer refuses unknown fields, and the registry decode rejects them too, so the accepted `extra` belongs to the observed path, where the keys are lost. The first step is to isolate the transport. |
 | F11 | `deferred` | The repair remains asymmetric: a scalar is wrapped into an array, and a one-element array is not unwrapped into a string. The incident was an orchestration error upstream of the schema, and the field-shape comment is a low-priority item. |
 | F12 | `fixed` | The `UNKNOWN_TYPE` details carry `registeredTypes`, the sorted registered type names, next to the offending `type`; the code and the message are unchanged. The `types` parameter of `objects_search` is published as an enum of the registered type names, so an unknown name is rejected by input validation with the full list in the message, before the call reaches the framework. |
-| F13 | `fixed` | The shared workflow is published in the `guidance` array of `objects_definitions`: the stable id and the hashed file name, `get` for a known id, the complete replacement and its checksum, the caller-owned timestamps, and the absence of referential enforcement. Every per-type tool description ends with "See objects_definitions for the object model and workflow." The relationship model stays in `docs/core-schemas.md`, which now also states the id rule and the type-name enum; it was not restructured into a cardinality table. |
+| F13 | `fixed` | The shared workflow is published in the `guidance` array of `objects_definitions`: the naming guidance quoted above, `get` for a known id, the complete replacement and its checksum, the caller-owned timestamps, and the absence of referential enforcement. Every per-type tool description ends with "See objects_definitions for the object model and workflow." The relationship model stays in `docs/core-schemas.md`, which also states the stored-id domain applied after lowercasing caller ids in any case and the type-name enum; it was not restructured into a cardinality table. |
 
 ### The five omissions of section 5
 
@@ -397,7 +408,7 @@ the server's own behavior is the opposite of what was suspected.
 | --- | --- | --- |
 | 1. The observed path can defeat the server's own repair | `corrected` | The server's boundary already rejects excess properties, so no library change was made for this. The keys are lost in the observed path, and isolating the transport is the first step, ahead of any library change. |
 | 2. Listing is an expensive discovery primitive | `fixed` | Every per-type list tool takes an optional `includeBody` boolean that defaults to true; with it false the returned objects omit the `body` field and carry identity, title, path and checksum only. Measured on this repository's vault: the 16 ADRs fell from 47,811 to 12,378 characters, and the 24 unit tests from 43,783 to 16,455. |
-| 3. Search is not exhaustive, and a model cannot tell | `fixed` | The `guidance` array states it: "Search is not exhaustive: it is capped by topN and can miss a stale hit, so confirm a known id with get." The search behavior itself is unchanged: there is still no pagination, and a full-text hit still carries no excerpt unless the body is requested. |
+| 3. Search is not exhaustive, and a model cannot tell | `fixed` | The current tool description states: Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction. |
 | 4. The demonstrated failure was a handoff race | `not applicable` | The durable fix is in how work is handed off, not in the tool surface. Nothing in the implementation addresses it. |
 | 5. A complete graph can still say the wrong thing | `not applicable` | The finding is about the content of a stored object rather than about the surface. The library deliberately does not validate relation targets, and section 8 records the correction that was made inside the vault. |
 

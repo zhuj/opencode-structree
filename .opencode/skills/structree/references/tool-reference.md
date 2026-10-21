@@ -22,23 +22,25 @@ and defaults to an empty string.
 
 | Parameter | Type | Notes |
 | --- | --- | --- |
-| `object` | object | The complete object. Identifiers must not be empty. |
+| `object` | object | The complete object. Identifiers may use any case; their lowercased forms must satisfy the portable stored-id domain in `object-model.md`. |
 | `body` | string, optional | The Markdown content. |
 
 Returns the stored object, its body, its path and its checksum.
 
 Fails with `ALREADY_EXISTS` when the id is taken, and with `VALIDATION` when a
-field does not match the schema, including an empty object id, owner identifier
-(for example `relations.project = ""`) or identifier inside a relation array.
-An empty identifier is refused before any target is considered. Relation targets
-are not validated for existence: a non-empty id naming a nonexistent target is
-still stored as written. All base fields and relation keys are required.
+field does not match the schema, including a caller-supplied object id, owner
+identifier or identifier inside a relation array whose lowercased form is outside
+the portable stored-id domain. Any case is accepted before lowercasing; an invalid
+lowercased identifier is refused before any target is considered. Relation targets
+are not validated for existence: a valid id naming a nonexistent target is stored after
+lowercase normalization. All base fields and relation keys are required. The
+normalization and file naming rules are in [the skill](../SKILL.md#rules-that-keep-the-vault-consistent).
 
 ### `<type>_get`
 
 | Parameter | Type | Notes |
 | --- | --- | --- |
-| `id` | non-empty string | Object identifier. Must not be empty. |
+| `id` | string | Object identifier in any case, lowercased before validation and lookup; see the portable stored-id domain in `object-model.md`. |
 
 Returns the object, its body, its path and its checksum. Fails with
 `NOT_FOUND` when there is no such object.
@@ -49,8 +51,8 @@ Replaces a complete revision. This is not a patch.
 
 | Parameter | Type | Notes |
 | --- | --- | --- |
-| `id` | non-empty string | Object identifier. Must not be empty. |
-| `object` | object | The complete object. Identifiers must not be empty. |
+| `id` | string | Object identifier in any case, lowercased before validation and lookup; see the portable stored-id domain in `object-model.md`. |
+| `object` | object | The complete object. Identifiers may use any case; their lowercased forms must satisfy the portable stored-id domain in `object-model.md`. |
 | `body` | string | The complete new Markdown body. |
 | `expectedChecksum` | string | The checksum of the revision being replaced. It must not be empty. |
 
@@ -62,7 +64,7 @@ Replaces a complete revision. This is not a patch.
 
 | Parameter | Type | Notes |
 | --- | --- | --- |
-| `id` | non-empty string | Object identifier. Must not be empty. |
+| `id` | string | Object identifier in any case, lowercased before validation and lookup; see the portable stored-id domain in `object-model.md`. |
 | `expectedChecksum` | string | The latest checksum. It must not be empty. |
 
 Returns `{ type, id, deleted: true }`.
@@ -88,7 +90,7 @@ manageable size.
 
 ### `objects_search`
 
-> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
+> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
 
 | Parameter | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -197,8 +199,13 @@ indexed, unchanged and deleted counts, every issue it found, and the new
 generation.
 
 This is the repair path, and unlike the status snapshot it keeps every issue.
-It writes derived state, so it is not a read-only call: do not use it in an
-investigation that must not change anything.
+The startup reconciliation also runs this repair in the background, including
+filename corrections, after the server starts answering. An immediate search
+may find nothing while existing files await indexing; check `objects_status`
+for `syncing` and the last completed report before interpreting an empty result.
+Create indexes its own object immediately even while that pass runs.
+It writes derived state and can rename source files, so it is not a read-only
+call: do not use it in an investigation that must not change anything.
 
 ## Error codes
 
@@ -209,7 +216,7 @@ that was wrong.
 
 | Code | Meaning | What to do |
 | --- | --- | --- |
-| `VALIDATION` / `VALIDATION_ERROR` | The input does not match the schema, including an empty object, owner or relation-array identifier | Supply a non-empty identifier; check `objects_definitions` for other field errors |
+| `VALIDATION` / `VALIDATION_ERROR` | The input does not match the schema, including a caller-supplied identifier whose lowercased form is outside the portable stored-id domain | Supply an identifier valid after lowercasing; check `objects_definitions` for other field errors |
 | `ALREADY_EXISTS` | The id is taken | `get` it and update it, or choose another id |
 | `NOT_FOUND` | No object with that id | Search for the id instead |
 | `DUPLICATE_ID` | Several objects of that type share one id, so a read of that id cannot resolve which object it means | The error names the id. Report it for operator resolution; the exposed tools cannot repair it |
