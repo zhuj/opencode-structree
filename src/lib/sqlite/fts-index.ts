@@ -32,12 +32,18 @@ export interface FTSRow<Row extends object> {
   readonly lexical_score: number;
 }
 
+/** Native lexical evidence, without source coordinates or column attribution. */
+export interface FTSExcerptRow<Row extends object> extends FTSRow<Row> {
+  readonly excerpt: string;
+}
+
 /**
  * The ranking is projected under an alias containing a space. Declared source columns are plain
  * SQL identifiers, so no declared column can occupy this alias, and the projection names the
  * declared columns explicitly, which keeps a retained extra column out of the result set.
  */
 const SCORE_KEY = "fts lexical score";
+const EXCERPT_KEY = "fts excerpt";
 
 /** FTS stores the original text. Only MATCH expressions receive literal-query escaping. */
 export class FTSIndex<Row extends object> {
@@ -205,6 +211,31 @@ export class FTSIndex<Row extends object> {
   }
 
   searchRows(query: string, filter?: WhereFilter, limit = 10): FTSRow<Row>[] {
+    return this.searchProjectedRows(query, filter, limit, false);
+  }
+
+  searchRowsWithExcerpt(query: string, filter?: WhereFilter, limit = 10): FTSExcerptRow<Row>[] {
+    return this.searchProjectedRows(query, filter, limit, true);
+  }
+
+  private searchProjectedRows(
+    query: string,
+    filter: WhereFilter | undefined,
+    limit: number,
+    excerpt: false,
+  ): FTSRow<Row>[];
+  private searchProjectedRows(
+    query: string,
+    filter: WhereFilter | undefined,
+    limit: number,
+    excerpt: true,
+  ): FTSExcerptRow<Row>[];
+  private searchProjectedRows(
+    query: string,
+    filter: WhereFilter | undefined,
+    limit: number,
+    excerpt: boolean,
+  ): FTSRow<Row>[] | FTSExcerptRow<Row>[] {
     validateLimit(limit);
     const expression = literalFtsQuery(query);
     if (expression === undefined) return [];
@@ -222,8 +253,11 @@ export class FTSIndex<Row extends object> {
     const projection = this.table.columnNames
       .map((column) => `m.${quoteIdentifier(column)}`)
       .join(", ");
+    const excerptProjection = excerpt
+      ? `, snippet(${name}, -1, '', '', '...', 32) AS "${EXCERPT_KEY}"`
+      : "";
     const rows = this.table.db.raw
-      .prepare(`SELECT ${projection}, bm25(${name}, 0.0, ${weights.join(", ")}) AS "${SCORE_KEY}"
+      .prepare(`SELECT ${projection}, bm25(${name}, 0.0, ${weights.join(", ")}) AS "${SCORE_KEY}"${excerptProjection}
       FROM (SELECT * FROM ${quoteIdentifier(this.table.tableName)} m ${where}) m
       JOIN ${name} ON m.${quoteIdentifier(this.sourceKey)} = ${name}.${quoteIdentifier(this.indexKey)}
       WHERE ${name} MATCH ? ORDER BY "${SCORE_KEY}" ASC, ${order} LIMIT ?`)
@@ -231,7 +265,11 @@ export class FTSIndex<Row extends object> {
     return rows.map((rawRow) => {
       const row = this.table.materialize(rawRow);
       if (row === undefined) throw new Error("A matched FTS source row could not be materialized.");
-      return { row, lexical_score: Number(rawRow[SCORE_KEY]) };
+      const match = { row, lexical_score: Number(rawRow[SCORE_KEY]) };
+      if (!excerpt) return match;
+      const text = rawRow[EXCERPT_KEY];
+      if (typeof text !== "string") throw new Error("A matched FTS excerpt must contain text.");
+      return { ...match, excerpt: text };
     });
   }
 

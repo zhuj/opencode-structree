@@ -82,25 +82,60 @@ manageable size.
 
 ### `objects_search`
 
+> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
+
 | Parameter | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `query` | string | required | Search text. It must not be blank. Full-text mode treats words literally, without FTS operators. |
-| `mode` | `fulltext`, `semantic`, `hybrid` | `hybrid` when an embedding provider is configured, `fulltext` otherwise | |
-| `types` | string[] | every type | The registered type names. An empty array searches no types. |
+| `query` | string | required | See the exact advertised query description below. |
+| `mode` | `fulltext`, `semantic`, `hybrid` | `hybrid` with a provider instance, otherwise `fulltext` | See the exact advertised mode description below. |
+| `types` | string[] | every type | See the exact advertised type-filter description below. |
 | `topN` | integer | the advertised default, 10 by default | From 1 to the advertised maximum, 100 by default. Read both numbers off the tool schema, because the server states them there. |
 | `includeBody` | boolean | false | The body is returned only when this is explicitly true. |
 
+`query`:
+
+> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more causes an error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
+
+`types`:
+
+> Restrict both lexical and semantic candidates to these registered types before ranking limits. Omit for all types; [] searches none. Type and directory names are not added to searchable text. Use the type's list tool to enumerate objects without a content query.
+
+`mode`:
+
+> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.
+
 Returns `{ mode, hits, indexGeneration }`. A hit is `{ type, id, name, title,
-path, checksum, score, fulltextRank, semanticDistance, matchedChunk }`, where
+path, checksum, score, fulltextRank, fulltextExcerpt?, semanticDistance, matchedChunk }`, where
 `fulltextRank` and `semanticDistance` are null when that ranking did not apply,
-`matchedChunk` is `{ index, start, end, text }` or null, and `body` is present
+`matchedChunk` is semantic `{ index, start, end, text }` or null (null for
+fulltext-only hits), and `body` is present
 only when `includeBody` was true.
 
-Two things to keep in mind. Search is capped by `topN` and can miss recent
-changes, so it is a way to discover ids, not a way to prove that something does
-not exist. And semantic or hybrid search needs an embedding provider: without
-one you get `EMBEDDINGS_DISABLED`, and with one that fails you get
-`EMBEDDINGS_UNAVAILABLE` and the message tells you to use `mode: "fulltext"`.
+`fulltextExcerpt` is optional string-or-null on the public surface. The concrete
+server always supplies a string for a lexical match, including hybrid with zero
+lexical fusion weight, and null otherwise, including semantic-only hybrid hits.
+Older/custom producers may omit it, meaning no excerpt was supplied, not that
+no lexical match exists. Selection can return name/title or raw YAML Markdown;
+there is no promise of a particular column or highest-scoring contribution.
+A 32-FTS-token extraction budget precedes the cap of the first
+`search.maxMatchCharacters` Unicode code points (1200 by default), including
+native `...` markers. Surrogate pairs are not split. This is discovery evidence,
+not a complete match explanation: every AND term need not appear, and a small cap
+or long token can clip the visible match. The excerpt has no coordinates or
+chunk index, no column provenance and no HTML highlighting. Source markup is
+text, not sanitized HTML. Semantic `matchedChunk` retains raw-source code-point
+coordinates and its existing cap. `includeBody` controls only the `body` property,
+not evidence disclosure. Stale/unreadable candidates lose their whole hit and
+excerpt without refill; use get for current complete content.
+
+Only a complete successful paginated list can support an absence claim about
+valid objects. Revalidation is not a guarantee against subsequent edits.
+Identical tokens are deduplicated before folding; case variants can count
+separately. More than 128 distinct extracted tokens causes `INTERNAL`, not
+`VALIDATION`. Two words match anywhere rather than as a phrase; `reconcil*`
+searches `reconcil`, and `cafe` can match `café`. Hybrid's provider can fail
+before lexical evaluation, even when punctuation produces no lexical tokens.
+No semantic/hybrid failure silently falls back to fulltext.
 
 ### `objects_definitions`
 
@@ -117,6 +152,8 @@ This is the authority on the schema of the server you are talking to.
 
 ### `objects_status`
 
+> Show index and synchronization state, embedding configuration/identity, last reports, and bounded known issues with totals, truncation and per-code counts. This call neither checks model files nor runs inference. Provider metadata, zero pending embeddings and dirty: false do not prove future inference success or complete discovery. objects_resync writes derived state and returns the full issue list.
+
 Takes no arguments. Returns the index generation and counts, the registered
 type names, the synchronization state, the embedding provider and fingerprint,
 the last error, and the issue list.
@@ -125,6 +162,10 @@ The issue list is bounded to the first 50 entries, so the response stays
 small. It comes with `issuesTotal` (how many issues exist), `issuesTruncated`
 (whether the list was cut) and `issuesByCode` (the count per code, over the
 whole set). This tool is read-only.
+
+`embeddings.provider` is the configured label; fingerprint and dimensions are
+metadata, not successful-inference evidence. Known issues do not establish
+exhaustive current health. Resync is not a read-only investigation prerequisite.
 
 ### `objects_resync`
 
@@ -154,6 +195,7 @@ that was wrong.
 | `UNKNOWN_TYPE` | The type name is wrong | The details carry `registeredTypes` |
 | `EMBEDDINGS_DISABLED` | Semantic or hybrid search without a provider | Use `mode: "fulltext"` |
 | `EMBEDDINGS_UNAVAILABLE` | The embedding provider failed | Use `mode: "fulltext"` |
+| `INTERNAL` | An internal failure, including lexical encoder overflow above 128 distinct extracted tokens | Shorten an over-limit query; report other internal failures |
 | `SOURCE_CONFLICT` | The server cannot establish a consistent state for that type: the scan did not complete, or it found invalid or duplicate objects | The details carry the scan issues and `objects_status` carries the counts. Report it for operator resolution; creating under a different id does not clear it |
 | `SCAN` | The read needed to establish object identity could not be completed | The message says why, but names no object. Report it for operator investigation; another `get` may fail for the same reason |
 | `CONFIG` | The server was started with an invalid configuration | Report the diagnostic and ask for operator assistance; do not change the configuration yourself |

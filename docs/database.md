@@ -180,6 +180,28 @@ revisions and direct-column FTS triggers, but application code performing raw
 writes must maintain any manually extracted FTS/vector indexes. Revision guards
 protect prepared work; they do not run an embedding model from a SQL trigger.
 
+## Literal queries in the object index
+
+The object index retains `unicode61 remove_diacritics 2`; no tokenizer or ranking
+change accompanies this guidance. The advertised query description is:
+
+> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more causes an error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
+
+The type-filter description is:
+
+> Restrict both lexical and semantic candidates to these registered types before ranking limits. Omit for all types; [] searches none. Type and directory names are not added to searchable text. Use the type's list tool to enumerate objects without a content query.
+
+`literalFtsQuery` extracts runs matching `[\p{L}\p{N}\p{M}]+`, deduplicates
+identical strings before folding, quotes each token and joins them with `AND`.
+Two words can occur anywhere, not necessarily together. `reconcil*` encodes as
+`"reconcil"`, not a prefix. Case variants can occupy separate token slots before
+SQLite folds them; repeated identical strings do not. Overflow throws and the
+framework maps it to `INTERNAL`, not `VALIDATION`. Blank queries are separately
+rejected by the framework. No extracted tokens means no lexical candidates,
+not suppression of semantic evaluation in hybrid mode. `cafe` matches `café`;
+literal matching is not byte-exact substring matching. Both drivers exercise
+these guarantees in `test/sqlite.test.ts`.
+
 ## Search result shapes
 
 `FTSIndex` and `VectorIndex` keep the source row and the ranking metadata in
@@ -193,6 +215,7 @@ shadows it.
 | Call | Result element |
 | --- | --- |
 | `FTSIndex.searchRows(query, filter?, limit?)` | `{ row: Row; lexical_score: number }` |
+| `FTSIndex.searchRowsWithExcerpt(query, filter?, limit?)` | `FTSExcerptRow<Row>`: `{ row: Row; lexical_score: number; excerpt: string }` |
 | `FTSIndex.search(query, filter?, limit?)` | `{ id: string; rank: number }` |
 | `VectorIndex.searchRows(vector, options?)` | `{ row: Row; distance: number; chunk_index: number; start_offset: number; end_offset: number; chunk_text: string }` |
 | `VectorIndex.searchIdByEmbedding(vector, filter?, limit?)` | `{ row: { id: string }; distance: number }` |
@@ -202,6 +225,30 @@ reports, and `VectorSearchResult.distance` is the same cosine distance that
 `VectorSearchRow.distance` reports. A BM25 score is a raw value in which
 smaller numbers rank first; it is not an ordinal rank. A vector distance is
 the cosine distance clamped to the range 0 to 2, so smaller is closer.
+
+`searchRowsWithExcerpt` shares the validated MATCH, bound filters, weighted BM25,
+source projection, ordering and limit with `searchRows`. The same statement adds
+`snippet(<quoted FTS table>, -1, '', '', '...', 32)`. Automatic column selection
+can choose name, title or raw text; it is not attribution to the largest BM25
+contribution. The fixed 32-token extraction budget is not a character or model-token
+limit. The reserved `fts excerpt` alias, like `fts lexical score`, is outside
+the declared source-column namespace; a source `excerpt` or retained extra alias
+cannot shadow it. Table identifiers are quoted and query/filter values stay bound.
+Existing `search` and `searchRows` shapes are unchanged.
+
+The concrete object index publishes this evidence as `fulltextExcerpt`, capped
+after extraction to the first `search.maxMatchCharacters` Unicode code points
+(1200 by default), including native `...` markers without splitting surrogate pairs.
+Every concrete hit has a string when it has a lexical match, even with zero lexical
+fusion weight, and null otherwise, including semantic-only hybrid candidates.
+The public field is optional for older/custom producers; absence means no excerpt
+was supplied. It carries no coordinates or column provenance and does not replace
+the unchanged semantic `matchedChunk`. One excerpt need not show every AND term;
+a small cap or long token can hide the visible match. Markup remains text, not
+HTML-sanitized output. The whole hit is discarded on checksum rejection without
+refill or an extra per-hit read. The `body` field remains opt-in.
+
+`fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
 
 ```ts
 import type { FTSRow, VectorSearchRow } from "@local/object-mcp/sqlite";

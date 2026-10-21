@@ -131,6 +131,11 @@ def run():
                 searched
             )
             assert searched["_meta"]["object-mcp/input-repair"]["repairs"], searched
+            hit = searched["structuredContent"]["hits"][0]
+            assert isinstance(hit["fulltextExcerpt"], str), searched
+            assert "verification" in hit["fulltextExcerpt"], searched
+            assert len(hit["fulltextExcerpt"]) <= 1200, searched
+            assert "body" not in hit and hit["matchedChunk"] is None, searched
             deleted = call(
                 process,
                 5,
@@ -195,6 +200,7 @@ def run():
                     "stdio": "passed",
                     "tools": 64,
                     "crud_and_search": "passed",
+                    "lexical_excerpt": "passed",
                     "relaxed_arguments": "passed",
                     "eof_shutdown": "passed",
                     "crashed_lock_recovery": "passed",

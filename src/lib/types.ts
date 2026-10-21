@@ -174,6 +174,8 @@ export interface SearchHit {
   readonly checksum: string;
   readonly score: number;
   readonly fulltextRank: number | null;
+  /** Bounded lexical evidence without coordinates; older/custom producers may omit it. */
+  readonly fulltextExcerpt?: string | null;
   readonly semanticDistance: number | null;
   readonly matchedChunk: {
     readonly index: number;

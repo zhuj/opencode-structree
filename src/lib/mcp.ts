@@ -61,14 +61,15 @@ function buildInputSchemas(search: EffectiveSearch, typeNames: readonly string[]
     search: Schema.Struct({
       query: Schema.NonEmptyString.annotate({
         description:
-          "Search text. Full-text mode treats words literally, without raw FTS operators.",
+          "Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more causes an error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.",
       }),
       mode: Schema.optionalKey(Schema.Literals(["fulltext", "semantic", "hybrid"])).annotate({
         description:
-          "Full-text, semantic, or hybrid search. Defaults to hybrid when an embedding provider is configured, fulltext otherwise.",
+          'Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.',
       }),
       types: Schema.optionalKey(Schema.Array(typeName)).annotate({
-        description: "Optional subset of registered type names. An empty array searches no types.",
+        description:
+          "Restrict both lexical and semantic candidates to these registered types before ranking limits. Omit for all types; [] searches none. Type and directory names are not added to searchable text. Use the type's list tool to enumerate objects without a content query.",
       }),
       topN: Schema.optionalKey(
         Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: search.maxTopN })),
@@ -94,6 +95,7 @@ const SearchOutput = effectMcpSchema(
         checksum: Schema.String,
         score: Schema.Number,
         fulltextRank: Schema.NullOr(Schema.Number),
+        fulltextExcerpt: Schema.optionalKey(Schema.NullOr(Schema.String)),
         semanticDistance: Schema.NullOr(Schema.Number),
         matchedChunk: Schema.NullOr(
           Schema.Struct({
@@ -384,7 +386,7 @@ export function registerObjectTools(
     "objects_search",
     {
       description:
-        "Search distinct objects using literal full-text, semantic embeddings, or hybrid reciprocal-rank fusion. Optional types restrict both ranking methods before limits. Search uses the synchronized, rebuildable SQLite index.",
+        "Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.",
       inputSchema: input.schema(searchInput),
       outputSchema: SearchOutput,
       annotations: readOnly,
@@ -414,7 +416,7 @@ export function registerObjectTools(
     "objects_status",
     {
       description:
-        "Show the current index, synchronization, and embedding-provider status, with a bounded issue list and its per-code counts. The resync report keeps every issue.",
+        "Show index and synchronization state, embedding configuration/identity, last reports, and bounded known issues with totals, truncation and per-code counts. This call neither checks model files nor runs inference. Provider metadata, zero pending embeddings and dirty: false do not prove future inference success or complete discovery. objects_resync writes derived state and returns the full issue list.",
       inputSchema: input.schema(EmptyInput),
       outputSchema: StatusOutput,
       annotations: readOnly,

@@ -30,6 +30,7 @@ export * from "./errors.ts";
 export { Filter, type WhereFilter } from "./filter.ts";
 export {
   escapeFTSQuery,
+  type FTSExcerptRow,
   FTSIndex,
   type FTSIndexOptions,
   type FTSResult,

@@ -108,10 +108,33 @@ client depends on most:
 | Method | Contract |
 | --- | --- |
 | `list(type, {limit?, offset?}, signal?)` | Valid filesystem objects in identifier order. `limit` is an integer from 1 to 1000 and defaults to 50; `offset` is 0 or more and defaults to 0. A value outside those ranges fails with `VALIDATION`. |
-| `search(request, signal?)` | Distinct objects from the synchronized index. `mode` is `fulltext`, `semantic` or `hybrid`, and defaults to hybrid when an embedding provider is configured and to full-text otherwise. `topN` is an integer from 1 to `config.search.maxTopN` and defaults to `config.search.defaultTopN`. |
-| `status()` | The index state, the registry, the embedding state, and the reconciliation issues. |
+| `search(request, signal?)` | Distinct objects from the derived index. `topN` is an integer from 1 to `config.search.maxTopN` and defaults to `config.search.defaultTopN`. See the exact mode and discovery guidance below. |
+| `status()` | Index and synchronization state, registry, embedding metadata, historical reports and bounded known issues, not a provider-readiness verdict. |
 
-Two details of that contract are visible to the client:
+The generated tools publish this search and mode guidance verbatim:
+
+> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
+
+> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.
+
+The query and type-filter descriptions are:
+
+> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more causes an error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
+
+> Restrict both lexical and semantic candidates to these registered types before ranking limits. Omit for all types; [] searches none. Type and directory names are not added to searchable text. Use the type's list tool to enumerate objects without a content query.
+
+The status description is:
+
+> Show index and synchronization state, embedding configuration/identity, last reports, and bounded known issues with totals, truncation and per-code counts. This call neither checks model files nor runs inference. Provider metadata, zero pending embeddings and dirty: false do not prove future inference success or complete discovery. objects_resync writes derived state and returns the full issue list.
+
+The configured provider label and the instance's fingerprint/dimensions are
+metadata, not usability guarantees. Query encoder overflow maps to `INTERNAL`,
+not `VALIDATION`. A successful, fully paginated source listing enumerates valid
+objects; incomplete or failed listing cannot establish absence. Revalidation
+does not guarantee against subsequent source edits. Resync is a write, not a
+prerequisite for read-only investigation.
+
+Two further details of that contract are visible to the client:
 
 - A provider that cannot embed the query raises `EMBEDDINGS_UNAVAILABLE` with
   the provider's own message as the cause. The message ends with `Search with
@@ -122,14 +145,38 @@ Two details of that contract are visible to the client:
   The stored synchronization report is not mutated, so `resync()` still
   returns every issue.
 
-The `includeBody` option belongs to the tool layer, not to the facade. The
-facade always returns complete objects; the generated list tool takes an
+The list `includeBody` option belongs to the tool layer, not to the facade's
+list operation. The facade list returns complete objects; the generated list tool takes an
 optional `includeBody` boolean that defaults to true and omits the `body`
 field of each returned object when it is false.
 
 A facade that exposes `config.search` makes the generated search schema state
 its own `maxTopN` and `defaultTopN`. A facade without configuration advertises
 the built-in defaults of 100 and 10.
+
+### Search hit evidence
+
+`SearchHit` adds `readonly fulltextExcerpt?: string | null`. Custom producers
+that omit it remain valid; absence means no excerpt was supplied, not that no
+lexical match exists. The concrete index emits it on every hit: a string for a
+lexical match in fulltext or hybrid, regardless of fusion weight, and null for
+semantic-only hits, including those in hybrid results. The MCP output property
+is likewise optional, accepting only string or null when present.
+
+SQLite chooses bounded evidence from indexed name, title or raw YAML Markdown
+with a 32-FTS-token budget. The public text keeps the first
+`search.maxMatchCharacters` Unicode code points (1200 by default), including
+native `...` markers. It has no coordinates, HTML highlighting or column
+attribution; source markup is text, not sanitized HTML. It is discovery evidence,
+not a complete match explanation: distant/cross-column AND terms may be absent,
+and a small cap or long token may clip the visible match.
+
+`matchedChunk` remains the nullable semantic `{ index, start, end, text }` with
+raw-source code-point coordinates; fulltext-only hits keep it null. `includeBody`
+controls only the `body` property. Existing per-hit checksum revalidation discards
+the whole hit and excerpt without refill or additional reads; it does not promise
+freshness after the check. Scores, ranks, ordering, filters and generation retain
+their existing meaning. See [decision 0009](decisions/0009-fulltext-search-excerpts.md).
 
 ## Copying the library
 

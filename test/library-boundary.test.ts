@@ -12,6 +12,32 @@ import { createNotesFramework } from "../examples/notes-library.ts";
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const libraryRoot = path.join(projectRoot, "src/lib");
 
+test("the public search hit accepts custom producers that omit lexical evidence", async () => {
+  const hit: library.SearchHit = {
+    type: "note",
+    id: "custom",
+    name: "Custom",
+    title: "Custom",
+    path: "custom.md",
+    checksum: "custom",
+    score: 1,
+    fulltextRank: 1,
+    semanticDistance: null,
+    matchedChunk: null,
+  };
+  const producer: Pick<library.ObjectFacade, "search"> = {
+    async search() {
+      return { mode: "fulltext", hits: [hit], indexGeneration: 1 };
+    },
+  };
+  const result: library.SearchResponse = await producer.search({ query: "custom" });
+  expect(result.hits[0]).not.toHaveProperty("fulltextExcerpt");
+  const withText: library.SearchHit = { ...hit, fulltextExcerpt: "Custom" };
+  const withoutLexicalMatch: library.SearchHit = { ...hit, fulltextExcerpt: null };
+  expect(withText.fulltextExcerpt).toBe("Custom");
+  expect(withoutLexicalMatch.fulltextExcerpt).toBeNull();
+});
+
 async function sourceFiles(directory: string): Promise<readonly string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const nested = await Promise.all(

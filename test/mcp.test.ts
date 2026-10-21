@@ -173,6 +173,97 @@ async function connected<A>(
 }
 
 describe("official MCP adapter", () => {
+  test("advertises optional string-or-null lexical excerpts and validates supplied or absent fields", async () => {
+    const facade = new MemoryFacade();
+    const hit = {
+      type: "project",
+      id: "p-1",
+      name: "demo",
+      title: "Demo",
+      path: "project.md",
+      checksum: "revision-1",
+      score: 1,
+      fulltextRank: 1,
+      semanticDistance: null,
+      matchedChunk: null,
+    };
+    let supplied: Record<string, unknown> = {};
+    facade.search = async () => ({
+      mode: "fulltext",
+      hits: [{ ...hit, ...supplied }],
+      indexGeneration: 2,
+    });
+    await connected(async (client) => {
+      const { tools } = await client.listTools();
+      expect(tools).toHaveLength(64);
+      const search = tools.find((tool) => tool.name === "objects_search")!;
+      expect(search.outputSchema).toHaveProperty(
+        "properties.hits.items.properties.fulltextExcerpt",
+      );
+      const schema = search.outputSchema as {
+        properties: {
+          hits: { items: { required: string[]; properties: Record<string, unknown> } };
+        };
+      };
+      expect(schema.properties.hits.items.required).not.toContain("fulltextExcerpt");
+      expect(JSON.stringify(schema.properties.hits.items.properties.fulltextExcerpt)).toContain(
+        '"string"',
+      );
+      expect(JSON.stringify(schema.properties.hits.items.properties.fulltextExcerpt)).toContain(
+        '"null"',
+      );
+      expect(search.description).toContain(
+        "`fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.",
+      );
+      for (const value of [undefined, null, "raw evidence"]) {
+        supplied = value === undefined ? {} : { fulltextExcerpt: value };
+        const response = await client.callTool({
+          name: "objects_search",
+          arguments: { query: "evidence", mode: "fulltext" },
+        });
+        expect(response.isError).not.toBe(true);
+        const returned = (response.structuredContent as { hits: Record<string, unknown>[] })
+          .hits[0]!;
+        expect(returned.fulltextExcerpt).toBe(value);
+        expect(returned).not.toHaveProperty("body");
+        expect(returned.matchedChunk).toBeNull();
+      }
+      for (const value of [12, {}, [], false]) {
+        supplied = { fulltextExcerpt: value };
+        const response = await client.callTool({
+          name: "objects_search",
+          arguments: { query: "evidence" },
+        });
+        expect(response.isError).toBe(true);
+        expect(JSON.stringify(response.content)).toContain("Output validation error");
+      }
+      const chunk = { index: 1, start: 9, end: 14, text: "🚀text" };
+      facade.search = async () => ({
+        mode: "hybrid",
+        hits: [
+          {
+            ...hit,
+            fulltextRank: null,
+            fulltextExcerpt: null,
+            semanticDistance: 0.2,
+            matchedChunk: chunk,
+          },
+        ],
+        indexGeneration: 2,
+      });
+      const semanticOnly = await client.callTool({
+        name: "objects_search",
+        arguments: { query: "evidence", mode: "hybrid" },
+      });
+      expect(semanticOnly.isError).not.toBe(true);
+      expect(semanticOnly.structuredContent).toHaveProperty("hits.0.fulltextExcerpt", null);
+      expect(semanticOnly.structuredContent).toHaveProperty("hits.0.matchedChunk", chunk);
+      expect((semanticOnly.structuredContent as { hits: unknown[] }).hits[0]).not.toHaveProperty(
+        "body",
+      );
+    }, facade);
+  });
+
   test("attaches the generated tools to an existing host server without replacing its tools", async () => {
     const facade = new MemoryFacade();
     await connected(
@@ -265,7 +356,7 @@ describe("official MCP adapter", () => {
       );
       expect(search.inputSchema).toHaveProperty(
         "properties.mode.description",
-        "Full-text, semantic, or hybrid search. Defaults to hybrid when an embedding provider is configured, fulltext otherwise.",
+        'Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.',
       );
       expect(search.inputSchema).toHaveProperty(
         "properties.types.items.enum",
@@ -285,6 +376,35 @@ describe("official MCP adapter", () => {
       );
     });
   });
+
+  for (const configured of [false, true]) {
+    test(`advertises truthful search and status guidance (configured: ${configured})`, async () => {
+      const facade = new MemoryFacade();
+      if (configured) facade.config = defineConfig({ search: { maxTopN: 42, defaultTopN: 7 } });
+      await connected(async (client) => {
+        const { tools } = await client.listTools();
+        const search = tools.find((tool) => tool.name === "objects_search")!;
+        expect(search.inputSchema).toHaveProperty(
+          "properties.query.description",
+          "Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more causes an error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.",
+        );
+        expect(search.inputSchema).toHaveProperty(
+          "properties.types.description",
+          "Restrict both lexical and semantic candidates to these registered types before ranking limits. Omit for all types; [] searches none. Type and directory names are not added to searchable text. Use the type's list tool to enumerate objects without a content query.",
+        );
+        expect(search.inputSchema).toHaveProperty(
+          "properties.mode.description",
+          'Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.',
+        );
+        expect(search.description).toBe(
+          "Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.",
+        );
+        expect(tools.find((tool) => tool.name === "objects_status")?.description).toBe(
+          "Show index and synchronization state, embedding configuration/identity, last reports, and bounded known issues with totals, truncation and per-code counts. This call neither checks model files nor runs inference. Provider metadata, zero pending embeddings and dirty: false do not prove future inference success or complete discovery. objects_resync writes derived state and returns the full issue list.",
+        );
+      }, facade);
+    });
+  }
 
   test("objects_definitions filters by type, lists every type, and publishes the workflow", async () => {
     await connected(async (client) => {

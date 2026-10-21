@@ -197,6 +197,103 @@ function provider(
 
 for (const driver of ["better-sqlite3", "bun"] as const) {
   describe(`Search abstractions (${driver})`, () => {
+    test("native excerpts preserve the old rows, raw scores, filters, limits and ordering", () => {
+      const database = open(driver);
+      const notes = new Notes(database, {
+        fts: { columns: ["title", "body"], weights: [5, 1], maintenance: "triggers" },
+      });
+      notes.initialize();
+      for (const note of [
+        { id: "b", title: "café", body: "orchard orchard", category: "one" },
+        { id: "a", title: "café orchard", body: "orchard", category: "one" },
+        { id: "c", title: "café", body: "orchard", category: "two" },
+      ])
+        notes.create(note);
+      const fts = notes.ftsIndex!;
+      for (const query of ["orchard", "cafe", "cafe cafe", "cafe orchard", "--- ***", "absent"]) {
+        for (const filter of [undefined, Filter.eq("category", "one"), Filter.in("category", [])]) {
+          for (const limit of [1, 10]) {
+            const old = fts.searchRows(query, filter, limit);
+            const projected = fts.searchRowsWithExcerpt(query, filter, limit);
+            expect(projected.map(({ excerpt: _excerpt, ...match }) => match)).toEqual(old);
+            expect(fts.search(query, filter, limit)).toEqual(
+              old.map((match) => ({ id: match.row.id, rank: match.lexical_score })),
+            );
+            for (const match of old)
+              expect(Object.keys(match).sort()).toEqual(["lexical_score", "row"]);
+            for (const match of projected) expect(match.excerpt.length).toBeGreaterThan(0);
+          }
+        }
+      }
+    });
+
+    test("trigger and extractor maintenance keep native excerpts current", () => {
+      const database = open(driver);
+      const notes = new Notes(database, {
+        fts: { columns: ["title", "body"], maintenance: "triggers" },
+      });
+      notes.initialize();
+      notes.create({ id: "a", title: "titleonly", body: "bodyonly", category: "one" });
+      const fts = notes.ftsIndex!;
+      expect(fts.searchRowsWithExcerpt("titleonly")[0]!.excerpt).toContain("titleonly");
+      expect(fts.searchRowsWithExcerpt("bodyonly")[0]!.excerpt).toContain("bodyonly");
+      notes.update("a", { body: "replacement" });
+      expect(fts.searchRowsWithExcerpt("bodyonly")).toEqual([]);
+      expect(fts.searchRowsWithExcerpt("replacement")[0]!.excerpt).toContain("replacement");
+      notes.delete("a");
+      expect(fts.searchRowsWithExcerpt("replacement")).toEqual([]);
+
+      const extracted = new Notes(database, {
+        fts: {
+          indexName: "extracted_fts",
+          columns: ["search_text"],
+          extractor: (row) => ({ search_text: row.body }),
+        },
+      });
+      extracted.initialize();
+      extracted.create({ id: "b", title: "other", body: "extractedneedle", category: "one" });
+      expect(extracted.ftsIndex!.searchRowsWithExcerpt("extractedneedle")[0]!.excerpt).toContain(
+        "extractedneedle",
+      );
+      extracted.update("b", { body: "freshneedle" });
+      expect(extracted.ftsIndex!.searchRowsWithExcerpt("extractedneedle")).toEqual([]);
+      expect(extracted.ftsIndex!.searchRowsWithExcerpt("freshneedle")[0]!.excerpt).toContain(
+        "freshneedle",
+      );
+    });
+
+    test("source excerpt fields and a retained reserved alias cannot shadow native evidence", () => {
+      const database = open(driver);
+      class ExcerptNotes extends IndexedTable<{ id: string; excerpt: string; body: string }> {
+        readonly tableName = "excerpt_notes";
+        constructor() {
+          super(
+            database,
+            [
+              { name: "excerpt", sqlType: "TEXT" },
+              { name: "body", sqlType: "TEXT" },
+            ],
+            {
+              fts: { columns: ["body"], maintenance: "triggers" },
+            },
+          );
+        }
+      }
+      const notes = new ExcerptNotes();
+      notes.initialize();
+      database.raw.exec(
+        `ALTER TABLE excerpt_notes ADD COLUMN "fts excerpt" TEXT DEFAULT 'spoofed'`,
+      );
+      notes.create({ id: "a", excerpt: "source value", body: "needle" });
+      const fts = notes.ftsIndex!;
+      const result = fts.searchRowsWithExcerpt("needle")[0]!;
+      expect(result.excerpt).toContain("needle");
+      expect(result.row.excerpt).toBe("source value");
+      expect(result.row).toEqual(notes.read("a")!);
+      expect(result.row).not.toHaveProperty("fts excerpt");
+      expect(result.lexical_score).toBe(fts.searchRows("needle")[0]!.lexical_score);
+    });
+
     test("lazy default names and trigger updates preserve original text and one row per identity", () => {
       const database = open(driver);
       const notes = new Notes(database, {

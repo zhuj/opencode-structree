@@ -108,15 +108,45 @@ the kind of object you are looking for:
 { "query": "commitment", "types": ["scenario_acceptance_criteria"], "topN": 10 }
 ```
 
-- `mode` defaults to `hybrid` when an embedding provider is configured and
-  `fulltext` otherwise. Full-text always works, so it is the safe default when
-  you do not know what the session has configured.
-- Search returns matched objects with a score, a rank and a matched chunk. The
-  bodies are omitted unless you pass `includeBody: true`.
-- Search is not exhaustive. It is capped by `topN` and it can miss recent
-  changes. When you know the id, `get` is cheaper and exact; use search to
-  discover ids, and confirm an absence against an exhaustive listing before
-  you conclude that something is missing.
+Use the advertised query guidance:
+
+> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more causes an error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
+
+The type-filter and mode guidance is:
+
+> Restrict both lexical and semantic candidates to these registered types before ranking limits. Omit for all types; [] searches none. Type and directory names are not added to searchable text. Use the type's list tool to enumerate objects without a content query.
+
+> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.
+
+The search tool states:
+
+> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
+
+Use a few content words, not the words of the type name. Two words can match
+anywhere, not necessarily together; `reconcil*` searches `reconcil`, not every
+word starting with it. `cafe` can match `café`. Repeated identical tokens do
+not use extra distinct-token slots, but case variants can count separately
+before folding. Overflow currently returns `INTERNAL`, not `VALIDATION`.
+Hybrid's provider can fail before lexical evaluation, including for punctuation
+only. Fulltext is embedding-free, not a promise that every request succeeds.
+Search's `matchedChunk` is nullable and semantic, not lexical evidence.
+Use `fulltextExcerpt` as lexical discovery evidence, not a complete match
+explanation. The concrete server emits a string for a lexical match, including
+hybrid with zero lexical fusion weight, and null for semantic-only hits, including
+hybrid candidates. Older/custom producers may omit it; absence only means no
+excerpt was supplied. Automatic selection may return name/title or raw
+frontmatter/body text, not every AND term or the highest-scoring column.
+The 32-FTS-token extraction budget is followed by a cap of the first
+`search.maxMatchCharacters` Unicode code points (1200 by default), including
+native `...` markers. A small cap or long token can clip the visible match.
+There are no coordinates, column provenance, HTML highlighting or fabricated
+chunk indexes; source markup is text, not sanitized HTML. The unchanged semantic
+`matchedChunk` has `{ index, start, end, text }` with raw-source code-point offsets
+and remains null for fulltext-only hits. `includeBody` controls only the `body`
+property, not content disclosure. Revalidation discards stale/unreadable hits
+with their evidence, without refill, and does not guarantee freshness afterwards.
+Confirm absence only after a complete successful paginated listing of the
+relevant type; a failed or incomplete listing does not establish absence.
 
 Listing a whole type is the expensive path. It is right when you want to
 enumerate everything of one kind, and wrong when you want to find one object.
@@ -163,9 +193,12 @@ guard against overwriting a revision someone else produced in between.
 
 ### 5. Check the state
 
-`objects_status` is a snapshot: index generation, object counts, the registered
-types, embedding state, the last error, and a bounded issue list with
-`issuesTotal`, `issuesTruncated` and `issuesByCode`. It is cheap to call.
+`objects_status` states:
+
+> Show index and synchronization state, embedding configuration/identity, last reports, and bounded known issues with totals, truncation and per-code counts. This call neither checks model files nor runs inference. Provider metadata, zero pending embeddings and dirty: false do not prove future inference success or complete discovery. objects_resync writes derived state and returns the full issue list.
+
+The configured provider label, fingerprint and dimensions are metadata, not
+proof of usability. Known issues are diagnostics, not an exhaustive health check.
 
 `objects_resync` refreshes the searchable state and reports every issue it
 found. It is the repair path when a search misses something you know exists,
@@ -185,8 +218,9 @@ must not change anything.
 - **Relations are not checked, so check them.** Nothing stops you from
   committing a link to an id that does not exist, and nothing will warn you
   later.
-- **Search can miss.** Confirm a known id with `get`, and resync when the index
-  looks stale.
+- **Search can miss.** Confirm a known id with `get` and fully paginate the
+  relevant type's list for enumeration. Resync is a write, not a prerequisite
+  for a read-only investigation.
 - **Use the canonical field names.** Fields that are still unrecognized after
   validation are rejected. Some servers repair recognizable input mistakes
   before validating, and report what they changed in the response metadata;
@@ -234,13 +268,14 @@ for the work.
 | Symptom | What happened | What to do |
 | --- | --- | --- |
 | `EMBEDDINGS_UNAVAILABLE` | The embedding provider failed, so semantic or hybrid search cannot run | Search again with `mode: "fulltext"` |
-| `EMBEDDINGS_DISABLED` | No provider is configured and you asked for semantic or hybrid | Use `mode: "fulltext"` |
+| `EMBEDDINGS_DISABLED` | No provider instance exists and you asked for semantic or hybrid | Use `mode: "fulltext"` |
+| `INTERNAL` after a long lexical query | More than 128 distinct extracted tokens can exceed the encoder limit | Use fewer distinct content tokens; report other internal failures |
 | `UNKNOWN_TYPE` | The type name is wrong | The error details carry `registeredTypes`, the names that exist |
 | `ALREADY_EXISTS` | The id is taken | `get` that id and update it, or choose another id |
 | `CHECKSUM_CONFLICT` | The revision moved since you read it | `get` it again and reapply your change |
 | `IMMUTABLE_ID` or `IMMUTABLE_CREATED_AT` | The update tried to change a frozen field | Keep the original values |
 | Validation error naming a field | The schema wants a field you omitted; every base field is required | Check `objects_definitions` for the type |
-| A search misses an object you know exists | The searchable state can be behind the last change | Confirm a known id with `get`; use `objects_resync` when the searchable state is stale |
+| A search misses an object you know exists | Results are bounded and the searchable state can be behind the last change | Confirm a known id with `get`; fully paginate the type's list for enumeration; resync only when a write is permitted |
 
 ## References
 

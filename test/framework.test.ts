@@ -130,6 +130,65 @@ async function eventually(check: () => boolean | Promise<boolean>, timeoutMs = 5
 }
 
 describe("filesystem-authoritative framework", () => {
+  test("search carries lexical evidence independently of body and preserves semantic-only chunks", async () => {
+    const { framework } = await fixture({ provider: new TestEmbeddingProvider() });
+    await framework.create("project", project(), "A car design with orchard evidence");
+    await framework.resync();
+    const lexical = (await framework.search({ query: "orchard", mode: "fulltext" })).hits[0]!;
+    expect(lexical.fulltextExcerpt).toContain("orchard");
+    expect(lexical.matchedChunk).toBeNull();
+    expect(lexical).not.toHaveProperty("body");
+    expect(
+      (await framework.search({ query: "orchard", mode: "fulltext", includeBody: false })).hits[0]!
+        .fulltextExcerpt,
+    ).toBe(lexical.fulltextExcerpt);
+    expect(
+      (await framework.search({ query: "orchard", mode: "fulltext", includeBody: true })).hits[0]!
+        .body,
+    ).toBe("A car design with orchard evidence");
+    const semantic = (await framework.search({ query: "automobile", mode: "semantic" })).hits[0]!;
+    const hybrid = (await framework.search({ query: "automobile", mode: "hybrid" })).hits[0]!;
+    expect(semantic.fulltextExcerpt).toBeNull();
+    expect(hybrid.fulltextExcerpt).toBeNull();
+    expect(hybrid.fulltextRank).toBeNull();
+    expect(hybrid.matchedChunk).toEqual(semantic.matchedChunk);
+    expect(hybrid.matchedChunk).not.toBeNull();
+    expect(hybrid).not.toHaveProperty("body");
+  });
+
+  test("checksum rejection discards the entire excerpt-bearing hit without refill or extra reads", async () => {
+    for (const missing of [false, true]) {
+      const { framework, root } = await fixture();
+      const strong = await framework.create(
+        "project",
+        project("strong", "orchard orchard"),
+        "orchard orchard",
+      );
+      await framework.create("project", project("weak", "ordinary"), "orchard");
+      const resources = framework as unknown as { readonly store: FileStore };
+      const reads = spyOn(resources.store, "readRaw");
+      const reconcile = spyOn(framework, "requestResync").mockImplementation(() => {});
+      try {
+        const original = await framework.search({ query: "orchard", mode: "fulltext", topN: 1 });
+        expect(original.hits[0]!.id).toBe("strong");
+        expect(original.hits[0]!.fulltextExcerpt).toContain("orchard");
+        expect(reads).toHaveBeenCalledTimes(1);
+        const filename = path.join(root, strong.path);
+        if (missing) await rm(filename);
+        else await writeFile(filename, "changed source");
+        reads.mockClear();
+        const rejected = await framework.search({ query: "orchard", mode: "fulltext", topN: 1 });
+        expect(rejected.hits).toEqual([]);
+        expect(rejected.indexGeneration).toBe(original.indexGeneration);
+        expect(reads).toHaveBeenCalledTimes(1);
+        expect(reconcile).toHaveBeenCalledTimes(1);
+      } finally {
+        reads.mockRestore();
+        reconcile.mockRestore();
+      }
+    }
+  });
+
   test("CRUD persists exact schemas and separate body; unrestricted IDs cannot become paths", async () => {
     const { framework, root } = await fixture();
     const input = project("../../outside:project");
@@ -465,17 +524,59 @@ describe("filesystem-authoritative framework", () => {
   test("an embedding provider failure names the full-text recovery", async () => {
     const provider = new TestEmbeddingProvider();
     const { framework } = await fixture({ provider });
+    await framework.create("project", project());
+    let queryCalls = 0;
     provider.beforeQuery = async () => {
+      queryCalls++;
       throw new Error("Provider temporarily offline");
     };
-    const failure = await framework
-      .search({ query: "architecture", mode: "semantic" })
-      .catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(FrameworkError);
-    if (!(failure instanceof FrameworkError)) throw new Error("Expected a framework error.");
-    expect(failure.code).toBe("EMBEDDINGS_UNAVAILABLE");
-    expect(failure.message).toContain("Provider temporarily offline");
-    expect(failure.message).toContain('Search with mode "fulltext"');
+    for (const mode of ["semantic", "hybrid"] as const) {
+      const failure = await framework
+        .search({ query: "architecture", mode })
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(FrameworkError);
+      if (!(failure instanceof FrameworkError)) throw new Error("Expected a framework error.");
+      expect(failure.code).toBe("EMBEDDINGS_UNAVAILABLE");
+      expect(failure.message).toContain("Provider temporarily offline");
+      expect(failure.message).toContain('Search with mode "fulltext"');
+      expect((await framework.search({ query: "architecture", mode, types: [] })).hits).toEqual([]);
+    }
+    expect(queryCalls).toBe(2);
+    expect((await framework.search({ query: "architecture", mode: "fulltext" })).hits).toHaveLength(
+      1,
+    );
+    expect(queryCalls).toBe(2);
+  });
+
+  test("disabled providers preserve errors and allow explicit fulltext and empty type subsets", async () => {
+    const { framework } = await fixture();
+    await framework.create("project", project());
+    for (const mode of ["semantic", "hybrid"] as const) {
+      await expect(framework.search({ query: "architecture", mode })).rejects.toMatchObject({
+        code: "EMBEDDINGS_DISABLED",
+      });
+      expect((await framework.search({ query: "architecture", mode, types: [] })).hits).toEqual([]);
+      await expect(framework.search({ query: " ", mode, types: [] })).rejects.toMatchObject({
+        code: "VALIDATION",
+      });
+      await expect(
+        framework.search({ query: "architecture", mode, types: [], topN: 0 }),
+      ).rejects.toMatchObject({ code: "VALIDATION" });
+    }
+    expect((await framework.search({ query: "architecture", mode: "fulltext" })).hits).toHaveLength(
+      1,
+    );
+    expect((await framework.search({ query: "architecture" })).mode).toBe("fulltext");
+  });
+
+  test("lexical encoder overflow is INTERNAL rather than VALIDATION and is not truncated", async () => {
+    const { framework } = await fixture();
+    const query = Array.from({ length: 129 }, (_, index) => `word${index}`).join(" ");
+    await expect(framework.search({ query, mode: "fulltext" })).rejects.toMatchObject({
+      code: "INTERNAL",
+    });
+    expect((await framework.search({ query, mode: "fulltext", types: [] })).hits).toEqual([]);
+    expect((await framework.search({ query: "***", mode: "fulltext" })).hits).toEqual([]);
   });
 
   test("an unknown type error names the registered types", async () => {
@@ -634,6 +735,13 @@ describe("filesystem-authoritative framework", () => {
       });
       expect(searched.isError).not.toBe(true);
       expect((searched.structuredContent as { hits: unknown[] }).hits).toHaveLength(1);
+      expect(searched.structuredContent).toHaveProperty(
+        "hits.0.fulltextExcerpt",
+        expect.stringContaining("integration"),
+      );
+      expect((searched.structuredContent as { hits: unknown[] }).hits[0]).not.toHaveProperty(
+        "body",
+      );
       const deleted = await client.callTool({
         name: "project_delete",
         arguments: { id: "p-1", expectedChecksum: content.checksum },

@@ -35,6 +35,7 @@ export interface IndexedMetadata {
 interface LexicalMatch {
   readonly row: MetadataRow;
   readonly lexical_score: number;
+  readonly excerpt: string;
 }
 
 interface SemanticMatch {
@@ -272,14 +273,14 @@ export class SqliteIndex {
         string,
         {
           row: MetadataRow;
-          lexical?: { rank: number; score: number };
+          lexical?: { rank: number; score: number; excerpt: string };
           semantic?: { rank: number; match: SemanticMatch };
         }
       >();
       lexical.forEach((match, index) => {
         combined.set(match.row.object_key, {
           row: match.row,
-          lexical: { rank: index + 1, score: match.lexical_score },
+          lexical: { rank: index + 1, score: match.lexical_score, excerpt: match.excerpt },
         });
       });
       semantic.forEach((match, index) => {
@@ -314,6 +315,12 @@ export class SqliteIndex {
           checksum: entry.row.checksum,
           score,
           fulltextRank: entry.lexical?.rank ?? null,
+          fulltextExcerpt:
+            entry.lexical === undefined
+              ? null
+              : Array.from(entry.lexical.excerpt)
+                  .slice(0, this.searchConfig.maxMatchCharacters)
+                  .join(""),
           semanticDistance: semanticMatch?.distance ?? null,
           matchedChunk: semanticMatch === undefined ? null : this.matchExcerpt(semanticMatch),
           ...(request.includeBody === true ? { body: entry.row.body } : {}),
@@ -367,7 +374,7 @@ export class SqliteIndex {
   private lexical(request: SearchRequest, limit: number): LexicalMatch[] {
     const index = this.database.objects.ftsIndex;
     if (index === undefined) throw new Error("The object full-text index is not configured.");
-    return index.searchRows(request.query, typeFilter(request.types), limit);
+    return index.searchRowsWithExcerpt(request.query, typeFilter(request.types), limit);
   }
 
   private semantic(

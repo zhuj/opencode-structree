@@ -188,7 +188,7 @@ Both registration functions inherit `objects.config.mcp`. An optional third argu
 | `search(request, signal?)` | Retrieve distinct objects from the synchronized index; `topN` is capped by the configured `search.maxTopN`. |
 | `resync(signal?)` | Wait for shared reconciliation and report every issue. |
 | `requestResync()` | Schedule a coalesced background reconciliation. |
-| `status()` | Report index generation, readiness, pending work, and a bounded issue list with its totals and per-code counts. |
+| `status()` | Report index and synchronization state, embedding metadata, pending work, and bounded known issues with totals and per-code counts, without testing provider readiness. |
 | `onEvent(listener)` | Subscribe to tool mutations, filesystem notifications, and completed sync reports. Returns an unsubscribe function. |
 | `close()` | Cancel pending work, drain active work, and release watcher, model, runtime, and database resources. |
 
@@ -219,7 +219,11 @@ The shared tools are `objects_search`, `objects_resync`, `objects_status`, and `
 
 The generated input schemas state the limits the runtime enforces. The list `limit` is an integer from 1 to 1000 and defaults to 50, the list `offset` is 0 or more and defaults to 0, and the search `topN` is an integer from 1 to the configured `search.maxTopN`, which is 100 by default, and defaults to the configured `search.defaultTopN`, which is 10 by default. Each per-type list tool takes an optional `includeBody` boolean that defaults to true; with it false the returned objects carry identity, title, path and checksum only, which is the cheap way to discover the contents of a type.
 
-`objects_status` reports the index state, the registry and the embedding state. Its issue list is bounded to the first 50 entries and carries `issuesTotal`, `issuesTruncated` and `issuesByCode`, a count per issue code, so a caller sees what the bound left out instead of a silently shortened list. The report returned by `objects_resync` still lists every issue, so the complete list stays available.
+`objects_status` publishes this description:
+
+> Show index and synchronization state, embedding configuration/identity, last reports, and bounded known issues with totals, truncation and per-code counts. This call neither checks model files nor runs inference. Provider metadata, zero pending embeddings and dirty: false do not prove future inference success or complete discovery. objects_resync writes derived state and returns the full issue list.
+
+Its issue list is bounded to the first 50 entries and carries `issuesTotal`, `issuesTruncated` and `issuesByCode`, a count per issue code. `embeddings.provider` is the configured label; fingerprint and dimensions are metadata, not an inference outcome. Resync is not a prerequisite for a read-only investigation.
 
 The domain schemas preserve all required fields from the supplied specification. Nullable fields require explicit `null`; canonical objects include every required array and nested commitment struct. `Feature` has no `partOf`; there is no `belongsTo` or separate `Acceptance` entity. See [the field and relationship reference](docs/core-schemas.md).
 
@@ -289,15 +293,43 @@ Example `objects_search` arguments:
 
 | Mode | Ranking |
 | --- | --- |
-| `fulltext` | SQLite FTS5 BM25 over names, titles, and complete raw files. Words are literal tokens joined with AND; raw FTS operators are not accepted. |
+| `fulltext` | SQLite FTS5 BM25 over names, titles, and complete raw files, using the literal-token semantics below. |
 | `semantic` | Exact cosine distance through `sqlite-vec`; the best matching whole-file/chunk vector determines each object's rank. |
 | `hybrid` | Weighted reciprocal rank fusion of the document-level full-text and semantic candidate lists. |
 
-The default is hybrid when a provider is configured, otherwise full-text, and the tool description states that rule. Explicit semantic/hybrid requests fail clearly when embeddings are disabled or the provider cannot embed the query. A provider failure keeps the `EMBEDDINGS_UNAVAILABLE` code and its cause, and its message ends with `Search with mode "fulltext" to query without embeddings.` Embedding failures during indexing leave full-text search available and mark affected objects pending.
+The tool's exact query, type-filter and mode descriptions are:
 
-Omitting `types` searches all registered types. An empty `types` array searches none. The parameter is published as an enum of the registered type names, so an unknown name is rejected by input validation with the full list in the message, before the call reaches the framework. A name that reaches the framework anyway fails with the `UNKNOWN_TYPE` code and carries `registeredTypes`, the sorted registered type names, in its error details. Both ranking methods filter types **before** their candidate limits, and multiple chunks never consume multiple positions in the final object result. `topN` is a maximum; fewer eligible matches may exist.
+> Nonblank search text. Fulltext and hybrid's lexical component require all extracted Unicode letter/number/mark tokens (AND), with SQLite case/diacritic folding and no stemming. Punctuation separates tokens; quotes and * do not enable phrase or prefix search. AND, OR and NOT are literal required words, not operators. Lexical evaluation accepts at most 128 distinct extracted tokens before folding; more causes an error, while punctuation-only text yields no lexical matches. Lexical search covers name, title and raw Markdown, including YAML frontmatter and body.
 
-Results include type, ID, name/title, source path/checksum, score, full-text rank, semantic distance, and the matching chunk excerpt when applicable. `includeBody` adds the full body. Excerpts are capped by `search.maxMatchCharacters`; their `[start,end)` offsets refer to the returned text in Unicode code points. A score is a ranking value, not a probability. Hybrid fusion examines `topN * candidateMultiplier` candidates per method, so increasing this setting can change the fused result order.
+> Restrict both lexical and semantic candidates to these registered types before ranking limits. Omit for all types; [] searches none. Type and directory names are not added to searchable text. Use the type's list tool to enumerate objects without a content query.
+
+> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.
+
+The search tool itself states:
+
+> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
+
+Identical extracted strings are deduplicated before folding; case variants can count separately against the 128-token limit. Overflow currently surfaces as `INTERNAL`, not `VALIDATION`. Two words can match anywhere, not necessarily as a phrase. `reconcil*` searches the token `reconcil`, and `cafe` matches `café`. Hybrid still invokes its provider before lexical evaluation. A provider failure keeps the `EMBEDDINGS_UNAVAILABLE` code and its cause, and its message ends with `Search with mode "fulltext" to query without embeddings.` Embedding failures during indexing leave full-text search available and mark affected objects pending. A configured provider or a snapshot's presence does not guarantee lazy model loading succeeds.
+
+The `types` parameter is published as an enum of the registered type names, so an unknown name is rejected by input validation with the full list in the message, before the call reaches the framework. A name that reaches the framework anyway fails with the `UNKNOWN_TYPE` code and carries `registeredTypes`, the sorted registered type names, in its error details. Multiple chunks never consume multiple positions in the final object result. Only a complete successful paginated source listing can support an absence claim about valid objects; search revalidation is not a guarantee against subsequent edits.
+
+Results include type, ID, name/title, source path/checksum, score, full-text rank, semantic distance, and nullable semantic `matchedChunk`. Fulltext hits have no semantic chunk. `includeBody` adds the full body. Semantic chunk text is capped by `search.maxMatchCharacters`; its `[start,end)` offsets refer to the raw source file in Unicode code points. A score is a ranking value, not a probability. Hybrid fusion examines `topN * candidateMultiplier` candidates per method, so increasing this setting can change the fused result order.
+
+Results also allow optional `fulltextExcerpt: string | null`. The concrete index
+always emits a string when a lexical match is present, including hybrid hits
+with zero lexical fusion weight, and null otherwise, including semantic-only
+hybrid candidates. Older servers or custom facades may omit it; absence means no
+excerpt was supplied. Automatic selection from name/title/raw text uses a fixed
+32-FTS-token budget, followed by the first `search.maxMatchCharacters` Unicode
+code points (1200 by default), including native `...` markers without splitting
+surrogate pairs. This evidence carries no coordinates or column attribution and
+does not change `matchedChunk`. It is discovery evidence, not a complete match
+explanation: every AND term need not appear, and a small cap or long token may
+clip the visible match. Treat source markup as text, not sanitized HTML.
+`includeBody` governs only the `body` property. The whole hit and its excerpt
+are discarded on checksum rejection without refill or extra per-hit reads;
+revalidation does not guarantee future freshness. See
+[decision 0009](docs/decisions/0009-fulltext-search-excerpts.md).
 
 SQLite stores:
 

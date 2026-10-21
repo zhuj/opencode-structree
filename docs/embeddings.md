@@ -6,6 +6,29 @@ An object's search text is its complete raw Markdown file, including YAML frontm
 
 The default retrieval chunk is 1,200 code points with 10% overlap: 120 shared code points and a 1,080-code-point step. For another chunk size the overlap is `floor(size * overlap)`. The split preserves surrogate pairs. It does not preserve grapheme clusters, sentences, or token boundaries. A short nonempty file has both a whole-file row and one positive part row; identical text is embedded only once per indexing operation.
 
+## Lexical evidence is not a semantic chunk
+
+Search hits also have optional `fulltextExcerpt: string | null`: the concrete
+index emits a string for every lexical match, including hybrid with zero lexical
+fusion weight, and null for semantic-only hits, including hybrid candidates.
+Older/custom producers may omit it; absence means no excerpt was supplied.
+This text is automatically selected from name/title/raw Markdown using a
+32-FTS-token extraction budget, then capped to the first
+`search.maxMatchCharacters` Unicode code points (1200 by default), including
+native `...` markers. It carries no coordinates, chunk index or column provenance.
+It is discovery evidence, not a complete match explanation; a small cap can clip
+the visible match, and cross-column or distant AND terms need not all appear.
+Source markup remains text, not HTML-sanitized output.
+
+`fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
+
+`matchedChunk` is unchanged: a semantic `{ index, start, end, text }` or null,
+with raw-source code-point coordinates and text capped by the same configuration.
+It remains null on fulltext-only hits. `includeBody` controls only the `body`
+property, not evidence disclosure. Existing checksum revalidation drops the whole
+hit and excerpt without refill or extra per-hit reads; it does not ensure future
+freshness. See [decision 0009](decisions/0009-fulltext-search-excerpts.md).
+
 ## Complete-file vectors and model context
 
 Transformer encoders have a finite context. The provider checks the actual tokenizer's count, including special tokens and the configured query/document prefix, against the smallest of the configured and model/tokenizer limits. Overlong inputs are recursively bisected at Unicode code-point boundaries. Every resulting window is checked before inference. No prefix-only truncation is accepted.
@@ -27,6 +50,23 @@ bun scripts/prepare-model.ts --config object-mcp.config.json
 Preparation downloads public model assets, verifies their pinned Git blob or LFS SHA-256 hashes, and runs inference on a synthetic verification sentence. The default q8 E5 weight file is approximately 118 MB, plus the tokenizer and configuration. The weights are not part of the source package.
 
 Normal operation defaults to `localFilesOnly: true`. It reads the snapshot at `<cacheDir>/<model>/<revision>` and makes no model-download requests. A missing snapshot reports `MODEL_NOT_CACHED` with the preparation command. Full-text indexing remains available through the framework when semantic indexing is pending.
+
+The advertised search mode guidance is:
+
+> Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; local-only ONNX needs prepared, loadable model files. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. Valid requests with types: [] return no hits without invoking a provider.
+
+The status tool states:
+
+> Show index and synchronization state, embedding configuration/identity, last reports, and bounded known issues with totals, truncation and per-code counts. This call neither checks model files nor runs inference. Provider metadata, zero pending embeddings and dirty: false do not prove future inference success or complete discovery. objects_resync writes derived state and returns the full issue list.
+
+Model loading is lazy. Snapshot presence alone does not prove that tokenizer,
+model or device initialization will succeed. `embeddings.provider` in status is
+the configured label; fingerprint and dimensions are metadata, including for an
+injected provider. No readiness field or probe is added. A noncancelled query
+embedding rejection is surfaced as `EMBEDDINGS_UNAVAILABLE`; no provider yields
+`EMBEDDINGS_DISABLED`. Neither silently falls back to fulltext. An explicit
+fulltext request does not invoke the provider. Hybrid can fail at the provider
+before lexical evaluation, even for punctuation-only input.
 
 The provider uses an absolute model snapshot path. This is deliberate: in the pinned Transformers.js 4.3.1 release, some metadata discovery paths ignore `revision`, `cache_dir`, and `local_files_only` passed to higher-level loaders. Loading an explicit local path avoids that behavior without changing process-wide Transformers settings.
 
