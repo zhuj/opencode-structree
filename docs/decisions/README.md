@@ -1,6 +1,6 @@
 # Architecture decision log
 
-These records document the implemented choices and their trade-offs. Each record carries its own decision status. ADRs 0004, 0005, and 0006 capture the user's explicit requests to adopt the supplied database/table abstraction, relaxed MCP parsing, and reusable vault/library boundary; ADR 0007 records the truthfulness and bounding changes to the tool surface that the language-model ergonomics review produced; the earlier records retain their proposed status.
+These records document the implemented choices and their trade-offs. Each record carries its own decision status. ADRs 0004, 0005, and 0006 capture the user's explicit requests to adopt the supplied database/table abstraction, relaxed MCP parsing, and reusable vault/library boundary; ADR 0007 records the truthfulness and bounding changes to the tool surface that the language-model ergonomics review produced; ADR 0016 records the CLI running without a configuration file; the earlier records retain their proposed status.
 
 | Record | Status | Decision |
 | --- | --- | --- |
@@ -19,5 +19,6 @@ These records document the implemented choices and their trade-offs. Each record
 | [0013](0013-name-the-file-after-the-id.md) | accepted | Accept caller ids in any case and lowercase before checking the portable stored-id domain; name each file after its id and reconcile a differing base name without overwriting an existing target. |
 | [0014](0014-keep-model-snapshots-in-the-user-cache.md) | accepted | Share pinned ONNX snapshots in the global user cache at onnx/models; keep authoritative sources and the derived search index in the project and preserve explicit cache overrides. |
 | [0015](0015-defer-the-startup-reconciliation.md) | accepted | Run the MCP server's startup reconciliation in the background; preserve waiting by default for library callers and completed-pass reports for diagnostic commands. |
+| [0016](0016-run-the-cli-without-a-configuration-file.md) | accepted | Make `--config` optional; use the built-in defaults and the local override layer when no configuration file is named, and drop the implicit `object-mcp.config.json` fallback. |
 
 The records identify actual test evidence and practical limits. Future changes should supersede a decision with a new numbered record rather than rewrite accepted history.

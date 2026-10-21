@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { StdioServerTransport, serveStdio } from "@modelcontextprotocol/server/stdio";
 import { createFramework } from "./framework.ts";
-import { loadConfig } from "./lib/config.ts";
+import { loadConfig, loadDefaultConfig } from "./lib/config.ts";
 import { createMcpServer } from "./lib/mcp.ts";
 
 async function main(): Promise<void> {
@@ -9,7 +9,7 @@ async function main(): Promise<void> {
   const command = args[0] ?? "serve";
   if (["--help", "-h", "help"].includes(command)) {
     process.stdout.write(
-      "Usage: bun src/cli.ts <serve|sync|status> --config object-mcp.config.json\n\nserve: MCP over stdio\nsync: reconcile files, report errors, exit\nstatus: startup reconciliation and current index status\n",
+      "Usage: bun src/cli.ts <serve|sync|status> [--config <file>]\n\nserve: MCP over stdio\nsync: reconcile files, report errors, exit\nstatus: startup reconciliation and current index status\n\nWithout --config the built-in defaults apply. The optional .local/.structree/config.yaml is read from the working directory when it exists.\n",
     );
     return;
   }
@@ -18,7 +18,7 @@ async function main(): Promise<void> {
   const tail = args.slice(1);
   if (tail.length && (tail.length !== 2 || tail[0] !== "--config" || !tail[1]))
     throw new Error("Expected --config <filename>.");
-  const config = await loadConfig(tail[1] ?? "object-mcp.config.json");
+  const config = tail[1] === undefined ? await loadDefaultConfig() : await loadConfig(tail[1]);
   const framework = await createFramework({
     waitForStartup: command !== "serve",
     config: {

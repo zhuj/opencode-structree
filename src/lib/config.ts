@@ -456,6 +456,14 @@ async function readLocalLayer(
   return resolveLayerPaths(parsed, base);
 }
 
+function resolveLocalConfigFile(
+  projectRoot: string,
+  options?: LoadConfigOptions,
+): string | undefined {
+  if (options?.localConfigFile === null) return undefined;
+  return options?.localConfigFile ?? path.resolve(projectRoot, LOCAL_CONFIG_RELATIVE_PATH);
+}
+
 export async function loadConfig(
   filename: string,
   options?: LoadConfigOptions,
@@ -476,12 +484,24 @@ export async function loadConfig(
   if (input === null || input === undefined || !isRecord(input))
     throw new FrameworkError("CONFIG", "Configuration must be an object.");
   const jsonLayer = resolveLayerPaths(input, path.dirname(absolute));
-  const localConfigFile =
-    options?.localConfigFile === null
-      ? undefined
-      : (options?.localConfigFile ?? path.resolve(projectRoot, LOCAL_CONFIG_RELATIVE_PATH));
+  const localConfigFile = resolveLocalConfigFile(projectRoot, options);
   const yamlLayer =
     localConfigFile === undefined ? undefined : await readLocalLayer(localConfigFile, projectRoot);
   const merged = yamlLayer === undefined ? jsonLayer : mergeLayers(jsonLayer, yamlLayer);
+  return defineConfig(merged as FrameworkConfigInput, projectRoot);
+}
+
+/**
+ * Loads the built-in defaults with the optional local override layer applied.
+ * The CLI uses it when no `--config` file is given, so a project needs no
+ * configuration file to run the server.
+ */
+export async function loadDefaultConfig(options?: LoadConfigOptions): Promise<FrameworkConfig> {
+  const projectRoot = options?.projectRoot ?? process.cwd();
+  const localConfigFile = resolveLocalConfigFile(projectRoot, options);
+  const yamlLayer =
+    localConfigFile === undefined ? undefined : await readLocalLayer(localConfigFile, projectRoot);
+  const baseLayer: Record<string, unknown> = { ...defaultConfig, embeddings: { ...onnxDefaults } };
+  const merged = yamlLayer === undefined ? baseLayer : mergeLayers(baseLayer, yamlLayer);
   return defineConfig(merged as FrameworkConfigInput, projectRoot);
 }

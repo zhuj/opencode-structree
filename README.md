@@ -49,6 +49,21 @@ Set `embeddings.localFilesOnly: true` to retain offline-only operation: a missin
 
 The included JSON configuration is complete. Relative paths resolve from its directory, so the MCP client's working directory does not alter the data location that file selects. The optional local override file `.local/.structree/config.yaml` is read from the working directory and applied last; see [storage layout and local overrides](#storage-layout-and-local-overrides).
 
+`--config` is optional. Without it the CLI uses the built-in defaults: the source root `.local/.structree/objects`, the derived index `.local/.structree/.cache/index.sqlite`, and the local ONNX provider, all relative to the working directory the command runs in.
+
+```json
+{
+  "mcpServers": {
+    "objects": {
+      "command": "bun",
+      "args": ["/absolute/path/object-mcp/src/cli.ts", "serve"]
+    }
+  }
+}
+```
+
+The optional `.local/.structree/config.yaml` override is read from the same working directory, so a project can run the server with no configuration file at all.
+
 For a first run using full-text search only:
 
 ```sh
@@ -61,6 +76,8 @@ To inspect or rebuild the derived index without starting a transport:
 bun src/cli.ts sync --config object-mcp.config.json
 bun src/cli.ts status --config object-mcp.config.json
 ```
+
+Both commands accept the same optional `--config` file; without it they report on the built-in default layout.
 
 The MCP server starts the watcher and first reconciliation during framework creation but no longer waits for that pass before answering requests. A search issued while the index is being built may find nothing; `objects_status` reports `syncing: true` and `lastSync: null` until a completed report exists. Create indexes its own object immediately, so create followed by search still works while existing files await discovery. A deferred startup failure is reported through the framework's error channel without stopping the server. Reconciliation is the repair path, not a read-only call: it can rename a discovered file to match its id. These renames can happen after the server starts answering. See [decision 0015](docs/decisions/0015-defer-the-startup-reconciliation.md).
 

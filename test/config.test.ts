@@ -4,7 +4,12 @@ import * as os from "node:os";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { FrameworkConfigInput } from "../src/lib/config.ts";
-import { defineConfig, LOCAL_CONFIG_RELATIVE_PATH, loadConfig } from "../src/lib/config.ts";
+import {
+  defineConfig,
+  LOCAL_CONFIG_RELATIVE_PATH,
+  loadConfig,
+  loadDefaultConfig,
+} from "../src/lib/config.ts";
 import { FrameworkError } from "../src/lib/errors.ts";
 
 async function withScratchDirectory<T>(run: (directory: string) => Promise<T>): Promise<T> {
@@ -306,6 +311,31 @@ test("a local YAML configuration must be an object", async () => {
     );
     expect(error.code).toBe("CONFIG");
     expect(error.message).toBe("Configuration must be an object.");
+  });
+});
+
+test("the default configuration loads without a configuration file and applies the local override layer", async () => {
+  await withScratchDirectory(async (directory) => {
+    const config = await loadDefaultConfig({ projectRoot: directory, localConfigFile: null });
+    expect(config.root).toBe(path.join(directory, ".local", ".structree", "objects"));
+    expect(config.sqlite.path).toBe(
+      path.join(directory, ".local", ".structree", ".cache", "index.sqlite"),
+    );
+    expect(config.embeddings.provider).toBe("onnx");
+    expect(config.search.defaultTopN).toBe(10);
+    expect(config.search.maxTopN).toBe(100);
+    expect(config.server).toEqual({ name: "object-mcp", version: "0.1.0" });
+
+    const yamlFile = await writeYamlFile(
+      directory,
+      path.join(LOCAL_CONFIG_RELATIVE_PATH),
+      "search:\n  defaultTopN: 4\nembeddings:\n  provider: disabled\n",
+    );
+    const overridden = await loadDefaultConfig({ projectRoot: directory });
+    expect(overridden.search.defaultTopN).toBe(4);
+    expect(overridden.search.maxTopN).toBe(100);
+    expect(overridden.embeddings).toEqual({ provider: "disabled" });
+    expect(yamlFile).toBe(path.join(directory, LOCAL_CONFIG_RELATIVE_PATH));
   });
 });
 

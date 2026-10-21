@@ -9,6 +9,7 @@ export {
   LOCAL_STATE_RELATIVE_DIRECTORY,
   type LoadConfigOptions,
   loadConfig,
+  loadDefaultConfig,
   McpInputRepairConfigSchema,
 } from "./config.ts";
 export {

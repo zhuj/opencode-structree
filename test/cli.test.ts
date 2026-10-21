@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { MarkdownCodec } from "../src/lib/vault/codec.ts";
@@ -77,11 +77,12 @@ describe("CLI argument and help contracts", () => {
       expect(result.code).toBe(0);
       expect(result.stderr).toBe("");
       expect(result.stdout).toContain(
-        "Usage: bun src/cli.ts <serve|sync|status> --config object-mcp.config.json",
+        "Usage: bun src/cli.ts <serve|sync|status> [--config <file>]",
       );
       expect(result.stdout).toContain("serve: MCP over stdio");
       expect(result.stdout).toContain("sync: reconcile files, report errors, exit");
       expect(result.stdout).toContain("status: startup reconciliation and current index status");
+      expect(result.stdout).toContain("Without --config the built-in defaults apply");
     }
   });
 });
@@ -267,6 +268,41 @@ FileStore.prototype.scan = async function (...args) {
       expect(result.code).toBe(0);
       const report = JSON.parse(result.stdout) as { issues: unknown[] };
       expect(report.issues).toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("the CLI runs without a configuration file and uses the built-in defaults", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "object-mcp-cli-default-"));
+    try {
+      const result = await runCli(["status"], directory);
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe("");
+      const status = JSON.parse(result.stdout) as Record<string, unknown>;
+      const resolved = await realpath(directory);
+      expect(status.root).toBe(path.join(resolved, ".local", ".structree", "objects"));
+      expect(status.embeddings).toMatchObject({ provider: "onnx", dimensions: 384 });
+      expect(status.objects).toBe(0);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("the CLI applies the local override file when no configuration file is given", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "object-mcp-cli-override-"));
+    try {
+      const local = path.join(directory, ".local", ".structree");
+      await mkdir(local, { recursive: true });
+      await writeFile(path.join(local, "config.yaml"), "embeddings:\n  provider: disabled\n");
+      const result = await runCli(["status"], directory);
+      expect(result.code).toBe(0);
+      const status = JSON.parse(result.stdout) as Record<string, unknown>;
+      expect(status.embeddings).toEqual({
+        provider: "disabled",
+        fingerprint: null,
+        dimensions: null,
+      });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

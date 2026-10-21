@@ -2,6 +2,8 @@
 
 Configuration is validated by `FrameworkConfigSchema` in `src/lib/config.ts`. Partial configuration sections merge with the defaults. Unknown keys, null sections, invalid bounds, and unsupported provider/driver names fail before serving tools. JSON file paths resolve relative to the configuration file; `defineConfig(input, baseDirectory)` and `createFramework({baseDirectory,...})` provide the programmatic equivalent. The CLI applies one further layer, the optional local override file described in [Local override file](#local-override-file).
 
+The CLI needs no configuration file. Without `--config` the built-in defaults are the base layer, and the local override file is the only layer that changes them. With `--config` the named JSON file is the base layer and the local override file is applied last.
+
 ## Storage and server
 
 | Field | Default | Meaning |
@@ -24,6 +26,8 @@ Both native adapters were tested on Linux x64. Custom macOS SQLite loading is su
 ## Local override file
 
 The CLI reads `.local/.structree/config.yaml` from the project root whenever that file exists. The file is optional; without it only the built-in defaults and the `--config` file apply. It is a YAML document with the same key structure as the JSON configuration, and it is applied as the last layer: the values it sets replace both the built-in defaults and the values of an explicit `--config` file, while its partial sections merge with the layer below.
+
+A project that supplies no `--config` file still reads this file, so the built-in defaults and the local overrides are the complete configuration of that project.
 
 Path values in this file resolve against the project root, which is the directory the command runs in. Relative paths inside a JSON `--config` file keep the other rule and resolve against that file's own directory.
 
