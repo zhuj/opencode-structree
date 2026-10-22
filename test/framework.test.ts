@@ -1006,7 +1006,7 @@ describe("filesystem-authoritative framework", () => {
       }),
     );
     try {
-      expect((await client.listTools()).tools).toHaveLength(64);
+      expect((await client.listTools()).tools).toHaveLength(65);
       const registry = new ObjectRegistry(coreDefinitions);
       const created = await client.callTool({
         name: "project_create",

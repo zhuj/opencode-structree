@@ -7,6 +7,8 @@ import { createEmbeddingProvider } from "./embeddings/index.ts";
 import { asFrameworkError, FrameworkError } from "./errors.ts";
 import { checksum, FileStore, objectKey } from "./filesystem.ts";
 import { ObjectRegistry } from "./registry.ts";
+import { buildRelationGraph, nodeKey, type RelationTraversal } from "./relation-graph.ts";
+import { affectedObjects, relationFindings, walkGraph } from "./relations.ts";
 import { SqliteIndex } from "./sqlite/index.ts";
 import {
   type EmbeddingProvider,
@@ -15,6 +17,14 @@ import {
   LIST_LIMIT_MAX,
   type ObjectDefinition,
   type ObjectFacade,
+  RELATIONS_DEPTH_MAX,
+  RELATIONS_EDGE_LIMIT,
+  RELATIONS_IMPACT_KINDS,
+  type RelationEdge,
+  type RelationKind,
+  type RelationNode,
+  type RelationsRequest,
+  type RelationsResponse,
   type SearchRequest,
   type SearchResponse,
   type SourceDocument,
@@ -26,6 +36,19 @@ import {
 import { reconcileSnapshot } from "./vault/reconciliation.ts";
 import { WatchLifecycle } from "./vault/watch-lifecycle.ts";
 import { FileWatcher } from "./vault/watcher.ts";
+
+/** Every relation kind, in the order the tool lists them. */
+const RELATION_KINDS: readonly RelationKind[] = [
+  "depends",
+  "uses",
+  "justifies",
+  "contains",
+  "owns",
+  "relates",
+];
+
+/** The number of findings one relation response carries before it summarizes the rest. */
+const RELATION_FINDING_LIMIT = 100;
 
 export type FrameworkEvent =
   | {
@@ -135,6 +158,9 @@ export class ObjectFramework implements ObjectFacade {
     this.config = config;
     // Registration is a boot-time operation: tools and watched directories share one immutable snapshot.
     this.registry = new ObjectRegistry(registry.definitions);
+    // A relation target type may be registered after the definition naming it, so the
+    // targets are checked once the registry is complete.
+    this.registry.assertRelationTargets();
     this.definitions = this.registry.definitions;
     this.provider = provider;
     this.fingerprint = provider ? embeddingFingerprint(provider, config.chunking) : undefined;
@@ -386,6 +412,152 @@ export class ObjectFramework implements ObjectFacade {
       return {
         objects: documents.slice(offset, offset + limit).map(publicObject),
         total: documents.length,
+      };
+    }, signal);
+  }
+
+  /**
+   * Answers a question about the relation graph: which objects a change reaches, and
+   * which objects justify a change. The graph is read from the Markdown sources, so the
+   * answer reflects the vault as it is on disk rather than the derived search index.
+   */
+  async relations(request: RelationsRequest, signal?: AbortSignal): Promise<RelationsResponse> {
+    this.ensureOpen();
+    const definition = this.registry.get(request.type);
+    // The identifier is lowercased like every other read and is never trimmed, because
+    // a stored id may carry surrounding spaces and trimming it would name another object.
+    if (request.id.trim().length === 0)
+      throw new FrameworkError("VALIDATION", "A relation query needs a nonempty object id.");
+    const id = request.id.toLowerCase();
+    const mode = request.mode ?? "neighbors";
+    if (mode !== "neighbors" && mode !== "impact")
+      throw new FrameworkError("VALIDATION", `Unknown relations mode: ${request.mode}.`);
+    const direction = request.direction ?? "both";
+    if (direction !== "incoming" && direction !== "outgoing" && direction !== "both")
+      throw new FrameworkError("VALIDATION", `Unknown relations direction: ${request.direction}.`);
+    if (mode === "impact" && request.direction !== undefined)
+      throw new FrameworkError(
+        "VALIDATION",
+        "direction applies to the neighbors mode only; the impact mode derives its direction from the relation kind.",
+      );
+    const depth = request.depth ?? 1;
+    if (!Number.isSafeInteger(depth) || depth < 1 || depth > RELATIONS_DEPTH_MAX)
+      throw new FrameworkError(
+        "VALIDATION",
+        `depth must be an integer from 1 to ${RELATIONS_DEPTH_MAX}.`,
+      );
+    const kinds = new Set<RelationKind>(
+      request.edgeKinds ?? (mode === "impact" ? RELATIONS_IMPACT_KINDS : RELATION_KINDS),
+    );
+    for (const kind of kinds)
+      if (!RELATION_KINDS.includes(kind))
+        throw new FrameworkError("VALIDATION", `Unknown relation kind: ${kind}.`);
+    for (const type of request.types ?? []) this.registry.get(type);
+    const includeRetired = request.includeRetired ?? true;
+    const traversal: RelationTraversal = { mode, direction, kinds, depth };
+
+    return this.run(async (inner) => {
+      const scan = await this.store.scan(undefined, inner);
+      if (!scan.complete)
+        throw new FrameworkError(
+          "SCAN",
+          "The relation graph is incomplete because a directory cannot be read.",
+        );
+      const rootDocument = scan.documents.find(
+        (document) => document.type === definition.name && document.object.id === id,
+      );
+      if (rootDocument === undefined) {
+        if (scan.conflictedKeys.includes(objectKey(definition.name, id)))
+          throw new FrameworkError(
+            "DUPLICATE_ID",
+            `Multiple ${definition.name} files use id ${JSON.stringify(id)}.`,
+            { type: definition.name, id },
+          );
+        if (scan.issues.length > 0)
+          throw new FrameworkError(
+            "SOURCE_CONFLICT",
+            "The relation graph is incomplete because one or more source files could not be read as unique valid objects.",
+            { issues: scan.issues },
+          );
+        throw new FrameworkError(
+          "NOT_FOUND",
+          `No ${definition.name} object with id ${JSON.stringify(id)}.`,
+          { type: definition.name, id },
+        );
+      }
+      // Invalid or unreadable files, as well as duplicated identities, are excluded
+      // from the scan. The graph would therefore be missing a possible object, so the
+      // query is refused rather than returning a partial answer as if it were complete.
+      if (scan.issues.length > 0)
+        throw new FrameworkError(
+          "SOURCE_CONFLICT",
+          "The relation graph is incomplete because one or more source files could not be read as unique valid objects.",
+          { issues: scan.issues },
+        );
+      const graph = buildRelationGraph(scan.documents, this.registry.definitions);
+      const root: RelationNode = {
+        type: rootDocument.type,
+        id: rootDocument.object.id,
+        name: rootDocument.object.name,
+        title: rootDocument.object.title,
+      };
+      const walk = walkGraph(graph, root, traversal);
+
+      const retired = new Set<string>();
+      for (const document of scan.documents)
+        if (document.object.retiredAt !== null)
+          retired.add(nodeKey(document.type, document.object.id));
+      const typeFilter = request.types === undefined ? undefined : new Set(request.types);
+      const reported = (key: string): boolean => {
+        if (!includeRetired && retired.has(key)) return false;
+        if (typeFilter === undefined) return true;
+        // A target that names no object carries the type its field declared, so a
+        // filter classifies it rather than letting it through.
+        const type = graph.nodeTypes.get(key);
+        return type === undefined || typeFilter.has(type);
+      };
+
+      const allEdges = walk.discovered.map((discovered) => ({
+        direction: discovered.forward ? ("outgoing" as const) : ("incoming" as const),
+        kind: discovered.edge.kind,
+        field: discovered.edge.field,
+        from: discovered.edge.from,
+        to: discovered.edge.to,
+        distance: discovered.distance,
+        affects: discovered.affects,
+        nextKey: discovered.nextKey,
+      }));
+      const selected = allEdges.filter((edge) => reported(edge.nextKey));
+      const edges: RelationEdge[] = selected.slice(0, RELATIONS_EDGE_LIMIT).map((edge) => ({
+        direction: edge.direction,
+        kind: edge.kind,
+        field: edge.field,
+        from: edge.from,
+        to: edge.to,
+        distance: edge.distance,
+        affects: edge.affects,
+      }));
+      const affected = affectedObjects(walk.reached).filter((entry) => {
+        const key = nodeKey(entry.type, entry.id);
+        // A target that names no object is not an object, so it is not in the answer
+        // set. Its edge and its finding still report the broken link.
+        if (!graph.nodes.has(key)) return false;
+        return reported(key);
+      });
+      const allFindings = relationFindings(
+        walk.discovered.map((discovered) => discovered.edge),
+        walk.cycles,
+      );
+      return {
+        root,
+        mode,
+        edges,
+        affected,
+        findings: allFindings.slice(0, RELATION_FINDING_LIMIT),
+        totalEdges: allEdges.length,
+        truncated: selected.length > RELATIONS_EDGE_LIMIT,
+        findingsTotal: allFindings.length,
+        findingsTruncated: allFindings.length > RELATION_FINDING_LIMIT,
       };
     }, signal);
   }

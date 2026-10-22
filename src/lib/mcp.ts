@@ -9,6 +9,7 @@ import {
   LIST_LIMIT_MAX,
   type McpInputRepairConfig,
   type ObjectFacade,
+  RELATIONS_DEPTH_MAX,
   type StoredObject,
 } from "./types";
 
@@ -26,6 +27,15 @@ const IdInput = Schema.Struct({
 // An empty Effect Struct also accepts non-objects; a string-keyed Never record accepts only {}.
 const EmptyInput = Schema.Record(Schema.String, Schema.Never);
 const NonnegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+/** The relation kinds the tool can follow, in the order the tool lists them. */
+const RELATION_KIND_NAMES = [
+  "depends",
+  "uses",
+  "justifies",
+  "contains",
+  "owns",
+  "relates",
+] as const;
 const DeleteInput = Schema.Struct({
   id: Schema.NonEmptyString.annotate({
     description: "Object identifier. Must be a portable file name of at most 200 UTF-8 bytes.",
@@ -84,6 +94,40 @@ function buildInputSchemas(search: EffectiveSearch, typeNames: readonly string[]
         description: "Include each matched object's complete Markdown body.",
       }),
     }),
+    relations: Schema.Struct({
+      type: typeName.annotate({
+        description:
+          "The registered type of the object to start from. Ids are unique within a type, not across types, so the type is always required.",
+      }),
+      id: Schema.NonEmptyString.annotate({
+        description: "The object identifier to start from.",
+      }),
+      mode: Schema.optionalKey(Schema.Literals(["neighbors", "impact"])).annotate({
+        description:
+          'Defaults to "neighbors", which returns the relation edges adjacent to the object. "impact" returns the objects a change to the object reaches, and the edges that carry the change.',
+      }),
+      direction: Schema.optionalKey(Schema.Literals(["incoming", "outgoing", "both"])).annotate({
+        description:
+          'Which way the walk follows the stored edges, for the neighbors mode only: "outgoing" runs from the source to the target, "incoming" runs from the target to the source, and "both" follows either. An edge is reported with the direction of the walk that first reached it, so one edge keeps one label at every depth. Defaults to "both". The impact mode derives its direction from the relation kind and rejects this argument.',
+      }),
+      edgeKinds: Schema.optionalKey(Schema.Array(Schema.Literals(RELATION_KIND_NAMES))).annotate({
+        description:
+          'The relation kinds to follow: "depends" (a holder requires its target), "uses" (a provider is used by its target), "justifies" (a holder is justified by its target), "contains" (a child is part of its target), "owns" (a child is owned by its target) and "relates" (a peer association). Defaults to depends, uses and justifies in the impact mode, and to every kind in the neighbors mode.',
+      }),
+      depth: Schema.optionalKey(
+        Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: RELATIONS_DEPTH_MAX })),
+      ).annotate({
+        description: `The number of hops to walk, 1 to ${RELATIONS_DEPTH_MAX}. Defaults to 1.`,
+      }),
+      types: Schema.optionalKey(Schema.Array(typeName)).annotate({
+        description:
+          "Restrict which related types are reported. The traversal still passes through the excluded types, so a filter narrows the answer without hiding the path that reaches it.",
+      }),
+      includeRetired: Schema.optionalKey(Schema.Boolean).annotate({
+        description:
+          "Include retired objects in the reported edges and affected set. Defaults to true; a retired object still links, so excluding it hides real impact.",
+      }),
+    }),
   };
 }
 const SearchOutput = effectMcpSchema(
@@ -127,6 +171,58 @@ const ResyncOutput = effectMcpSchema(
     generation: NonnegativeInt,
   }),
 );
+const RelationNodeSchema = Schema.Struct({
+  type: Schema.String,
+  id: Schema.String,
+  name: Schema.String,
+  title: Schema.String,
+});
+const RelationEdgeSchema = Schema.Struct({
+  direction: Schema.Literals(["incoming", "outgoing"]),
+  kind: Schema.Literals(RELATION_KIND_NAMES),
+  field: Schema.String,
+  from: RelationNodeSchema,
+  to: RelationNodeSchema,
+  distance: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+  affects: Schema.NullOr(Schema.Literals(["from", "to"])),
+});
+const RelationsOutput = effectMcpSchema(
+  Schema.Struct({
+    root: RelationNodeSchema,
+    mode: Schema.Literals(["neighbors", "impact"]),
+    edges: Schema.Array(RelationEdgeSchema),
+    affected: Schema.Array(
+      Schema.Struct({
+        type: Schema.String,
+        id: Schema.String,
+        name: Schema.String,
+        title: Schema.String,
+        distance: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
+        kind: Schema.Literals(RELATION_KIND_NAMES),
+        via: Schema.Array(RelationNodeSchema),
+      }),
+    ),
+    findings: Schema.Array(
+      Schema.Struct({
+        code: Schema.String,
+        message: Schema.String,
+        edge: Schema.optionalKey(
+          Schema.Struct({
+            kind: Schema.Literals(RELATION_KIND_NAMES),
+            field: Schema.String,
+            from: RelationNodeSchema,
+            to: RelationNodeSchema,
+          }),
+        ),
+        node: Schema.optionalKey(RelationNodeSchema),
+      }),
+    ),
+    totalEdges: NonnegativeInt,
+    truncated: Schema.Boolean,
+    findingsTotal: NonnegativeInt,
+    findingsTruncated: Schema.Boolean,
+  }),
+);
 const DefinitionsInput = Schema.Struct({
   type: Schema.optionalKey(Schema.String).annotate({
     description: "Return only this registered type. Omit it for every registered type.",
@@ -141,6 +237,7 @@ const DEFINITION_GUIDANCE = [
   "Relation targets are not validated: a link to an object that does not exist is stored as written.",
   "The description field is a one-line summary; the body is the Markdown content.",
   "Search is not exhaustive: it is capped by topN and can miss a stale hit, so confirm a known id with get.",
+  "Use objects_relations to answer what a change reaches and what justifies an object; it is the exact path for relation questions, where search is a heuristic.",
 ];
 const DefinitionsOutput = effectMcpSchema(
   Schema.Struct({
@@ -235,7 +332,11 @@ export function registerObjectTools(
     maxTopN: configuredSearch?.maxTopN ?? defaultConfig.search.maxTopN,
     defaultTopN: configuredSearch?.defaultTopN ?? defaultConfig.search.defaultTopN,
   };
-  const { list: listInput, search: searchInput } = buildInputSchemas(
+  const {
+    list: listInput,
+    search: searchInput,
+    relations: relationsInput,
+  } = buildInputSchemas(
     effectiveSearch,
     registry.definitions.map((definition) => definition.name),
   );
@@ -409,6 +510,19 @@ export function registerObjectTools(
     },
     (args, ctx) =>
       toolResult(args, async () => ({ ...(await facade.search(args, ctx.mcpReq.signal)) })),
+  );
+
+  server.registerTool(
+    "objects_relations",
+    {
+      description:
+        "Read the relation graph around one object: what a change reaches, and what justifies a change. Use it for 'what breaks if I changed this decision' and 'which decisions should I review if that scenario is changed'. The graph is read from the Markdown sources, so the answer reflects the vault on disk. The mode 'neighbors' returns relation edges up to the requested depth; 'outgoing' follows each stored edge from source to target, 'incoming' follows it from target to source, and 'both' follows either. An edge is reported with the direction of the walk that first reached it, so the label remains stable at every depth. The mode 'impact' returns the objects a change to the root reaches, following the relation kind: a change to the target of a depends, justifies, contains or owns relation propagates to the holder, and a change to the holder of a uses relation propagates to the target. The impact mode derives its direction from the kind and rejects the direction argument. The edgeKinds filter defaults to depends, uses and justifies in the impact mode, because contains and owns are organizational and relates carries no impact. The findings array reports the link defects the model does not prevent: DANGLING_TARGET, TARGET_TYPE_MISMATCH, AMBIGUOUS_TARGET and CYCLE. A finding is reported only when the defect lies within the queried depth. A target that names no object is not an object, so it is not in the affected set, while its edge and its finding still report the broken link. Invalid, unreadable or duplicated source objects are excluded from the graph, so the query is refused with SOURCE_CONFLICT rather than answering partially.",
+      inputSchema: input.schema(relationsInput),
+      outputSchema: RelationsOutput,
+      annotations: readOnly,
+    },
+    (args, ctx) =>
+      toolResult(args, async () => ({ ...(await facade.relations(args, ctx.mcpReq.signal)) })),
   );
 
   server.registerTool(

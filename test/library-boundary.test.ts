@@ -125,7 +125,7 @@ test("a separate Notes schema uses the library facade, generated tools, Markdown
     );
     expect(framework.definitions.map(({ name }) => name)).toEqual(["note"]);
     const tools = await client.listTools();
-    expect(tools.tools).toHaveLength(9);
+    expect(tools.tools).toHaveLength(10);
     expect(tools.tools.some(({ name }) => name === "project_create")).toBe(false);
     const result = await client.callTool({
       name: "note_create",

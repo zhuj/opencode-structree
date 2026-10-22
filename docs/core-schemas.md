@@ -57,6 +57,21 @@ The retirement wording publishes existing listing and search behavior, not a beh
 
 Empty arrays and explicit nullable parents are valid, but caller-supplied object ids, owner identifiers such as `relations.project`, and identifiers inside relation arrays are lowercased first and must then satisfy the stored-id domain above or fail with `VALIDATION`. Required owner IDs do not imply target existence, inverse consistency, or hierarchy/dependency cycle validation. The shape schemas allow repeated IDs within arrays. Cross-object validation can be added at an application boundary if a host needs it.
 
+### Relation kinds
+
+Each relationship field carries a kind, declared next to the schema in `src/registry.ts`. The kind is not derivable from the field name, and it decides how a change propagates along the relation, which is what the `objects_relations` tool walks.
+
+| Kind | Fields | A change to the target reaches the holder | A change to the holder reaches the target |
+| --- | --- | --- | --- |
+| `depends` | every `dependsOn` | yes | no |
+| `justifies` | every `commitsTo`, every `commitment.*` | yes | no |
+| `uses` | every `usedBy` and `usedIn` | no | yes |
+| `contains` | every `partOf` | yes | no |
+| `owns` | every `project` and the criteria `scenario` | yes | no |
+| `relates` | every `relatesTo` | no | no |
+
+A `uses` relation is stored on the provider, so it is the only kind whose impact runs along the stored edge rather than against it. The registry refuses a declaration that names a field the schema does not provide, and refuses one whose target type is not registered.
+
 ## The tool surface
 
 `objects_definitions` publishes the canonical JSON schema of every registered type. It takes an optional `type` argument, which returns a single definition instead of the whole registry, and its output carries a `guidance` array with the shared object model and workflow. Each per-type tool description points at it.

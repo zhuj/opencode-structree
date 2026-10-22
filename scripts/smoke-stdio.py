@@ -86,7 +86,7 @@ def run():
             assert opened["protocolVersion"] == "2025-11-25", opened
             send(process, {"jsonrpc": "2.0", "method": "notifications/initialized"})
             tools = call(process, 2, "tools/list", {})["tools"]
-            assert len(tools) == 64
+            assert len(tools) == 65
             value = {
                 "id": "stdio-test",
                 "name": "stdio-test",
@@ -198,7 +198,7 @@ def run():
             json.dumps(
                 {
                     "stdio": "passed",
-                    "tools": 64,
+                    "tools": 65,
                     "crud_and_search": "passed",
                     "lexical_excerpt": "passed",
                     "relaxed_arguments": "passed",

@@ -1,7 +1,7 @@
 # Tool reference
 
-The server registers 64 tools: five verbs for each of the twelve object types,
-plus four global tools.
+The server registers 65 tools: five verbs for each of the twelve object types,
+plus five global tools.
 
 In code mode they are namespaced (`tools.structree.project_get`); on the wire the
 name is `project_get`, and a host that prefixes local MCP tools presents it as
@@ -161,6 +161,62 @@ Two words match anywhere rather than as a phrase; `reconcil*`
 searches `reconcil`, and `cafe` can match `café`. Hybrid's provider can fail
 before lexical evaluation, even when punctuation produces no lexical tokens.
 No semantic/hybrid failure silently falls back to fulltext.
+
+### `objects_relations`
+
+> Read the relation graph around one object: what a change reaches, and what justifies a change. Use it for 'what breaks if I changed this decision' and 'which decisions should I review if that scenario is changed'. The graph is read from the Markdown sources, so the answer reflects the vault on disk. The mode 'neighbors' returns relation edges up to the requested depth; 'outgoing' follows each stored edge from source to target, 'incoming' follows it from target to source, and 'both' follows either. An edge is reported with the direction of the walk that first reached it, so the label remains stable at every depth. The mode 'impact' returns the objects a change to the root reaches, following the relation kind: a change to the target of a depends, justifies, contains or owns relation propagates to the holder, and a change to the holder of a uses relation propagates to the target. The impact mode derives its direction from the kind and rejects the direction argument. The edgeKinds filter defaults to depends, uses and justifies in the impact mode, because contains and owns are organizational and relates carries no impact. The findings array reports the link defects the model does not prevent: DANGLING_TARGET, TARGET_TYPE_MISMATCH, AMBIGUOUS_TARGET and CYCLE. A finding is reported only when the defect lies within the queried depth.
+
+| Parameter | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `type` | string | required | The registered type of the object to start from. Ids are unique within a type, not across types, so the type is always required. |
+| `id` | string | required | The object identifier to start from. |
+| `mode` | `neighbors`, `impact` | `neighbors` | `neighbors` returns the edges adjacent to the object; `impact` returns the objects a change to it reaches. |
+| `direction` | `incoming`, `outgoing`, `both` | `both` | Which way the walk follows the stored edges: `outgoing` from the source to the target, `incoming` the reverse. The neighbors mode only; the impact mode rejects it. |
+| `edgeKinds` | string[] | `depends`, `uses`, `justifies` in the impact mode; every kind in the neighbors mode | The kinds to follow. |
+| `depth` | integer | 1 | From 1 to 10. The number of hops to walk. |
+| `types` | string[] | every type | Restricts which related types are reported. The traversal still passes through the excluded types. |
+| `includeRetired` | boolean | true | A retired object still links, so excluding it hides real impact. |
+
+The response carries the root, the discovered `edges` with their kind, field,
+direction, distance and affected endpoint, the `affected` set with the path
+that reached each object, the `findings`, `totalEdges`, `truncated`,
+`findingsTotal` and `findingsTruncated`.
+
+The `direction` of an edge is the direction of the walk that first reached it,
+which is the one nearest the root, so one edge keeps one label at every depth.
+A target that names no object is not in the `affected` set, because it is not
+an object; its edge and its finding still report the broken link. An invalid,
+unreadable or duplicated source object is excluded from the graph, so the query
+is refused with `SOURCE_CONFLICT` rather than answering partially.
+
+The relation kinds and the way a change propagates along each of them:
+
+| Kind | Fields | A change to the target reaches the holder | A change to the holder reaches the target |
+| --- | --- | --- | --- |
+| `depends` | `dependsOn` | yes | no |
+| `justifies` | `commitsTo`, `commitment.scenarios`, `commitment.features`, `commitment.goals` | yes | no |
+| `uses` | `usedBy`, `usedIn` | no | yes |
+| `contains` | `partOf` | yes | no |
+| `owns` | `project`, `scenario` | yes | no |
+| `relates` | `relatesTo` | no | no |
+
+A `uses` relation is stored on the provider, so it is the only kind whose
+impact runs along the stored edge rather than against it.
+
+`findings` reports the link defects the model does not prevent, because the
+framework stores relation targets as written and never checks them:
+
+| Code | Meaning |
+| --- | --- |
+| `DANGLING_TARGET` | The target id names no object of any type. |
+| `TARGET_TYPE_MISMATCH` | The target exists, but in a different type than the field declares. The link is still followed. |
+| `AMBIGUOUS_TARGET` | The target id is held by more than one type and the declared type does not hold it. |
+| `CYCLE` | A genuine back-edge. It is reported and not expanded. |
+
+A finding is reported only when the defect lies within the queried depth. The
+findings list is bounded to the first 100 entries and carries `findingsTotal`
+and `findingsTruncated`. A cycle is reported when its closing edge lies within
+the hop budget, so a self-reference is reported at a depth of one.
 
 ### `objects_definitions`
 

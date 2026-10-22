@@ -218,7 +218,7 @@ Facade inputs accept domain `Date` objects or the canonical JSON representation.
 
 ## The 12 schemas and their tools
 
-Every registration produces `_create`, `_get`, `_update`, `_delete`, and `_list` tools. The built-in registry therefore exposes **60 entity tools plus four shared tools**, for **64 tools** total.
+Every registration produces `_create`, `_get`, `_update`, `_delete`, and `_list` tools. The built-in registry therefore exposes **60 entity tools plus five shared tools**, for **65 tools** total.
 
 | Schema | Registry/tool prefix | Directory |
 | --- | --- | --- |
@@ -235,7 +235,7 @@ Every registration produces `_create`, `_get`, `_update`, `_delete`, and `_list`
 | `ScenarioTestSchema` | `scenario_test` | `scenario-tests/` |
 | `AcceptanceTestSchema` | `acceptance_test` | `acceptance-tests/` |
 
-The shared tools are `objects_search`, `objects_resync`, `objects_status`, and `objects_definitions`. The last returns JSON schemas derived from the Effect definitions, including descriptions and required keys.
+The shared tools are `objects_search`, `objects_relations`, `objects_resync`, `objects_status`, and `objects_definitions`. The last returns JSON schemas derived from the Effect definitions, including descriptions and required keys.
 
 `objects_definitions` takes an optional `type` argument. Without it, it returns every registered type; with it, only that one; an unknown type fails with the `UNKNOWN_TYPE` error. Its output also carries a `guidance` array that states the object model and the intended workflow once. Its naming guidance is:
 
@@ -254,6 +254,48 @@ Its issue list is bounded to the first 50 entries and carries `issuesTotal`, `is
 The domain schemas preserve all required fields from the supplied specification. Nullable fields require explicit `null`; canonical objects include every required array and nested commitment struct. `Feature` has no `partOf`; there is no `belongsTo` or separate `Acceptance` entity. See [the field and relationship reference](docs/core-schemas.md).
 
 Schema validation checks shape and the [portable stored-id domain](docs/core-schemas.md#shared-fields) with `VALIDATION` before any target is considered. A caller may send an id in any case: at the very start of create, get, update and delete, the framework lowercases the object id and every relation identifier below the tool boundary, then checks the lowercased form against the domain. A create with `MyThing` stores `mything`; a get with `MyThing` finds it. A valid identifier naming a nonexistent target is still stored after normalization. Validation does not check reference existence, inverse relationships, duplicate reference IDs, or dependency/hierarchy cycles. The filesystem layer separately needs one unambiguous `(type,id)` to address a stored object. Conflicting files with the same identity are reported and excluded from indexing; identical ID strings in different registered types are allowed. Within a type, ids differing only in case are one id, so a second create fails with `ALREADY_EXISTS` on every filesystem.
+
+## The relation graph
+
+`objects_relations` answers the two questions a graph-shaped vault raises:
+what a change reaches, and what justifies a change. It reads the Markdown
+sources, so the answer reflects the vault on disk rather than the derived
+search index.
+
+The two modes answer two different questions, so the tool classifies every
+relation field into a kind that decides how a change propagates:
+
+| Kind | Fields | A change to the target reaches the holder | A change to the holder reaches the target |
+| --- | --- | --- | --- |
+| `depends` | `dependsOn` | yes | no |
+| `justifies` | `commitsTo`, `commitment.scenarios`, `commitment.features`, `commitment.goals` | yes | no |
+| `uses` | `usedBy`, `usedIn` | no | yes |
+| `contains` | `partOf` | yes | no |
+| `owns` | `project`, `scenario` | yes | no |
+| `relates` | `relatesTo` | no | no |
+
+A `uses` relation is stored on the provider, so it is the only kind whose
+impact runs along the stored edge rather than against it. The `neighbors` mode
+returns relation edges up to the requested depth, with `direction` selecting
+how the walk follows each stored edge: `outgoing` from source to target,
+`incoming` from target to source, and `both` either way. An edge keeps the
+direction of the walk that first reached it, so its label stays stable as depth
+increases. The `impact` mode returns the
+objects a change to the root reaches, at a `depth` of up to ten hops, and
+defaults to the `depends`, `uses` and `justifies` kinds.
+
+Because the framework stores relation targets as written and never checks
+them, the response also reports the link defects: `DANGLING_TARGET`,
+`TARGET_TYPE_MISMATCH`, `AMBIGUOUS_TARGET` and `CYCLE`. A type mismatch does
+not drop the link, so the blast radius stays complete, but it is reported
+because the object does not mean what the field declares. A target that names
+no object is not an object, so it is not in the answer set, while its edge and
+its finding still report the broken link. Invalid, unreadable or duplicated
+source objects are excluded from the graph, so the query is refused with
+`SOURCE_CONFLICT` rather than answering partially.
+
+The [proposal](docs/impact-analysis-proposal.md) records the design, the
+traversal semantics and the verified behaviour.
 
 ## Using structree from an agent
 

@@ -14,6 +14,8 @@ import {
 import type {
   FrameworkConfig,
   ObjectFacade,
+  RelationsRequest,
+  RelationsResponse,
   SearchRequest,
   SearchResponse,
   StoredObject,
@@ -41,6 +43,7 @@ class MemoryFacade implements ObjectFacade {
   readonly registry = createCoreRegistry();
   lastSignal: AbortSignal | undefined;
   lastSearch: SearchRequest | undefined;
+  lastRelations: RelationsRequest | undefined;
   createdWithDate = false;
   closed = 0;
   beforeGet: ((signal?: AbortSignal) => Promise<void>) | undefined;
@@ -131,6 +134,22 @@ class MemoryFacade implements ObjectFacade {
     return { mode: request.mode ?? "hybrid", hits: [], indexGeneration: 2 };
   }
 
+  async relations(request: RelationsRequest, signal?: AbortSignal): Promise<RelationsResponse> {
+    this.lastSignal = signal;
+    this.lastRelations = request;
+    return {
+      root: { type: request.type, id: request.id, name: "demo", title: "Demo" },
+      mode: request.mode ?? "neighbors",
+      edges: [],
+      affected: [],
+      findings: [],
+      totalEdges: 0,
+      truncated: false,
+      findingsTotal: 0,
+      findingsTruncated: false,
+    };
+  }
+
   async resync(signal?: AbortSignal): Promise<SyncReport> {
     this.lastSignal = signal;
     return {
@@ -196,7 +215,7 @@ describe("official MCP adapter", () => {
     });
     await connected(async (client) => {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(64);
+      expect(tools).toHaveLength(65);
       const search = tools.find((tool) => tool.name === "objects_search")!;
       expect(search.outputSchema).toHaveProperty(
         "properties.hits.items.properties.fulltextExcerpt",
@@ -270,7 +289,7 @@ describe("official MCP adapter", () => {
     await connected(
       async (client) => {
         const { tools } = await client.listTools();
-        expect(tools).toHaveLength(65);
+        expect(tools).toHaveLength(66);
         expect(tools.some((tool) => tool.name === "host_ping")).toBe(true);
         expect(tools.some((tool) => tool.name === "project_create")).toBe(true);
         expect(tools.some((tool) => tool.name === "objects_search")).toBe(true);
@@ -298,10 +317,10 @@ describe("official MCP adapter", () => {
     expect(facade.closed).toBe(0);
   });
 
-  test("advertises all 64 tools with schema-derived required fields and optional wrapper keys", async () => {
+  test("advertises all 65 tools with schema-derived required fields and optional wrapper keys", async () => {
     await connected(async (client) => {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(64);
+      expect(tools).toHaveLength(65);
       for (const definition of coreDefinitions) {
         for (const operation of ["create", "get", "update", "delete", "list"]) {
           expect(tools.some((tool) => tool.name === `${definition.name}_${operation}`)).toBe(true);
@@ -442,12 +461,15 @@ describe("official MCP adapter", () => {
       expect(all.isError).not.toBe(true);
       expect(all.structuredContent).toHaveProperty("definitions.length", 12);
       const guidance = (all.structuredContent as { guidance: string[] }).guidance;
-      expect(guidance).toHaveLength(7);
+      expect(guidance).toHaveLength(8);
       expect(guidance[0]).toBe(
         "Object ids are stable, unique within their type, and are the only handle: the file name is the id, an id is always lowercase, and the scanner renames a file whose name does not match its id.",
       );
       expect(guidance[6]).toBe(
         "Search is not exhaustive: it is capped by topN and can miss a stale hit, so confirm a known id with get.",
+      );
+      expect(guidance[7]).toBe(
+        "Use objects_relations to answer what a change reaches and what justifies an object; it is the exact path for relation questions, where search is a heuristic.",
       );
       const single = await client.callTool({
         name: "objects_definitions",
@@ -456,7 +478,7 @@ describe("official MCP adapter", () => {
       expect(single.isError).not.toBe(true);
       expect(single.structuredContent).toHaveProperty("definitions.length", 1);
       expect(single.structuredContent).toHaveProperty("definitions.0.name", "project");
-      expect(single.structuredContent).toHaveProperty("guidance.length", 7);
+      expect(single.structuredContent).toHaveProperty("guidance.length", 8);
       const unknown = await client.callTool({
         name: "objects_definitions",
         arguments: { type: "does_not_exist" },

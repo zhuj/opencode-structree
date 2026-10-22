@@ -1,6 +1,6 @@
 ---
 name: structree
-description: "Read and write the project's structured knowledge vault through the structree MCP server: projects, goals, features, scenarios, acceptance criteria, ADRs, contracts, interfaces, entities and the three test kinds, stored as typed Markdown objects with relations between them. Use this whenever the answer depends on what the project already knows or decided (what is in the vault for X, which criteria cover Y, what was decided about Z, what does this interface or contract guarantee, which test proves this), whenever you are about to write a decision, requirement or test that might duplicate something already recorded, and whenever the outcome of the task should become a durable object instead of staying in the chat. Also use it before writing an ADR, a plan or a test plan, to check what already exists."
+description: "Read and write the project's structured knowledge vault through the structree MCP server: projects, goals, features, scenarios, acceptance criteria, ADRs, contracts, interfaces, entities and the three test kinds, stored as typed Markdown objects with relations between them. Use this whenever the answer depends on what the project already knows or decided (what is in the vault for X, which criteria cover Y, what was decided about Z, what does this interface or contract guarantee, which test proves this, what breaks if that decision changes, which decisions to review if that scenario changes), whenever you are about to write a decision, requirement or test that might duplicate something already recorded, and whenever the outcome of the task should become a durable object instead of staying in the chat. Also use it before writing an ADR, a plan or a test plan, to check what already exists."
 compatibility: Requires the structree MCP server to be registered in the session.
 metadata:
   surface: mcp
@@ -177,7 +177,41 @@ enumerate everything of one kind, and wrong when you want to find one object.
 `<type>_get({ id })` returns the object, its Markdown body, its path and its
 checksum. The checksum is not decoration: it is what authorizes the next write.
 
-### 4. Write
+### 4. Follow the relation graph
+
+`objects_relations` is the exact path for questions about what a change
+reaches. It reads the Markdown sources, so it reflects the vault on disk.
+
+```jsonc
+{ "type": "adr", "id": "adr-flat-search-namespace", "mode": "impact", "depth": 3 }
+```
+
+The two modes answer two different questions:
+
+- `neighbors` returns the relation edges adjacent to the object. `direction`
+  selects which way the walk follows the stored edges: `outgoing` from the
+  source to the target, `incoming` the reverse. An edge keeps the label of the
+  walk that first reached it, so the label does not change with the depth.
+- `impact` returns the objects a change to the root reaches. It follows the
+  relation kind, not the stored direction: a change to the target of a
+  `depends`, `justifies`, `contains` or `owns` relation propagates to the
+  holder, and a change to the holder of a `uses` relation propagates to the
+  target. The impact mode rejects the `direction` argument.
+
+`edgeKinds` defaults to `depends`, `uses` and `justifies` in the impact mode.
+`contains` and `owns` are organizational and `relates` carries no impact, so
+ask for them explicitly when the hierarchy matters. `depth` is the number of
+hops, from 1 to 10.
+
+The `findings` array reports the link defects the model does not prevent:
+`DANGLING_TARGET`, `TARGET_TYPE_MISMATCH`, `AMBIGUOUS_TARGET` and `CYCLE`. A
+finding appears only when the defect lies within the queried depth. A type
+mismatch is worth reporting to the user, because the link is still followed
+but the object does not mean what the field says. A target that names no
+object is not in the answer set, because it is not an object; its edge and its
+finding still report the broken link.
+
+### 5. Write
 
 Every object needs all of its fields, including the null ones. `retiredAt` is
 `null` for a live object. A retired object is still listed and searchable; check
@@ -214,7 +248,7 @@ forward.
 When you update, read first and write back what you read. The checksum is the
 guard against overwriting a revision someone else produced in between.
 
-### 5. Check the state
+### 6. Check the state
 
 `objects_status` states:
 
@@ -262,6 +296,9 @@ of an investigation that must not change anything.
 - **Search can miss.** Confirm a known id with `get` and fully paginate the
   relevant type's list for enumeration. Resync is a write, not a prerequisite
   for a read-only investigation.
+- **Relation questions go through `objects_relations`.** Searching for a
+  relation id is a heuristic: it is capped, non-exhaustive, and its index can
+  lag. The relation tool is exact.
 - **Use the canonical field names.** Fields that are still unrecognized after
   validation are rejected. Some servers repair recognizable input mistakes
   before validating, and report what they changed in the response metadata;
@@ -296,6 +333,26 @@ for the work.
 2. Create the ADR with `commitment.scenarios` pointing at the scenarios it
    serves, and `partOf`/`dependsOn` when it extends or depends on another.
 3. Report the new id.
+
+**"What breaks if I change this decision?"**
+
+1. `objects_relations({ "type": "adr", "id": "<the decision>", "mode": "impact", "depth": 3 })`.
+2. The `affected` set is the blast radius. Each entry carries the distance and
+   the kind that reached it, and the `via` path shows how.
+3. Read the objects that matter with `<type>_get` before describing them, and
+   report the `findings`: a `TARGET_TYPE_MISMATCH` means a link in the blast
+   radius points at an object of the wrong type, so the object does not mean
+   what the field says.
+4. A `depth` of 1 gives the direct dependents. Raise it only when the direct
+   set is not the whole answer; the set grows quickly.
+
+**"Which decisions should I review if that scenario is changed?"**
+
+1. `objects_relations({ "type": "scenario", "id": "<the scenario>", "mode": "impact", "edgeKinds": ["justifies"], "depth": 1 })`.
+2. The result is the decisions that commit to the scenario. At depth 2 it also
+   returns the contracts, interfaces and entities those decisions justify,
+   which is the review set rather than the decision set.
+3. Report the decision ids with their titles, so the reader can look them up.
 
 **"Which tests prove this behavior?"**
 

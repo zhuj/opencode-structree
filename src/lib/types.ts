@@ -22,12 +22,29 @@ export interface BaseObject {
   readonly metadata: Readonly<Record<string, any>>;
 }
 
+/**
+ * The relation kinds. The kind decides how a change propagates along a relation, which is
+ * what separates a dependency that breaks from a justification that goes stale.
+ */
+export type RelationKind = "depends" | "uses" | "justifies" | "contains" | "owns" | "relates";
+
+export interface RelationDescriptor {
+  /** The path inside the object's `relations` struct, for example "commitsTo" or "commitment.scenarios". */
+  readonly path: string;
+  readonly kind: RelationKind;
+  /** The registered type the field declares its targets to be. */
+  readonly targetType: string;
+  readonly cardinality: "one" | "many";
+}
+
 export interface ObjectDefinition<A extends BaseObject = BaseObject> {
   readonly name: string;
   readonly directory: string;
   readonly description: string;
   // biome-ignore lint/suspicious/noExplicitAny: Registry entries erase each Effect codec's encoded type while retaining its domain type and runtime validation.
   readonly schema: Schema.Codec<A, any, never, never>;
+  /** The relation fields this type declares, with the kind that decides impact propagation. */
+  readonly relations?: readonly RelationDescriptor[];
 }
 
 export interface StoredObject<A extends BaseObject = BaseObject> {
@@ -194,12 +211,93 @@ export interface SearchResponse {
   readonly indexGeneration: number;
 }
 
+/** The largest number of hops one relation query may walk. */
+export const RELATIONS_DEPTH_MAX = 10;
+
+/** The number of edges one relation query may return before it summarizes the rest. */
+export const RELATIONS_EDGE_LIMIT = 1000;
+
+export type RelationsMode = "neighbors" | "impact";
+
+export type RelationsDirection = "incoming" | "outgoing" | "both";
+
+/** The kinds that propagate a change by default; the organizational kinds are opt-in. */
+export const RELATIONS_IMPACT_KINDS: readonly RelationKind[] = ["depends", "uses", "justifies"];
+
+export interface RelationsRequest {
+  readonly type: string;
+  readonly id: string;
+  readonly mode?: RelationsMode;
+  /** Which way the walk follows the stored edges. It applies to the neighbors mode only. */
+  readonly direction?: RelationsDirection;
+  readonly edgeKinds?: readonly RelationKind[];
+  readonly depth?: number;
+  /** Restricts which related types are reported. The traversal still passes through them. */
+  readonly types?: readonly string[];
+  readonly includeRetired?: boolean;
+}
+
+export interface RelationNode {
+  readonly type: string;
+  readonly id: string;
+  readonly name: string;
+  readonly title: string;
+}
+
+export interface RelationEdge {
+  /** The direction of the walk that first reached the edge, which is the one nearest the root. */
+  readonly direction: "incoming" | "outgoing";
+  readonly kind: RelationKind;
+  /** The relation field the edge was read from, for example "relations.commitsTo". */
+  readonly field: string;
+  readonly from: RelationNode;
+  readonly to: RelationNode;
+  /** The hops from the root to the edge's far endpoint. */
+  readonly distance: number;
+  /** The endpoint a change to the other endpoint propagates to. Null when the kind carries no impact. */
+  readonly affects: "from" | "to" | null;
+}
+
+export interface AffectedObject {
+  readonly type: string;
+  readonly id: string;
+  readonly name: string;
+  readonly title: string;
+  readonly distance: number;
+  readonly kind: RelationKind;
+  /** The nodes walked to reach this one, starting at the root. */
+  readonly via: readonly RelationNode[];
+}
+
+export interface RelationFinding {
+  readonly code: string;
+  readonly message: string;
+  readonly edge?: {
+    readonly kind: RelationKind;
+    readonly field: string;
+    readonly from: RelationNode;
+    readonly to: RelationNode;
+  };
+  readonly node?: RelationNode;
+}
+
+export interface RelationsResponse {
+  readonly root: RelationNode;
+  readonly mode: RelationsMode;
+  readonly edges: readonly RelationEdge[];
+  readonly affected: readonly AffectedObject[];
+  readonly findings: readonly RelationFinding[];
+  readonly totalEdges: number;
+  readonly truncated: boolean;
+  readonly findingsTotal: number;
+  readonly findingsTruncated: boolean;
+}
+
 export interface SyncIssue {
   readonly path: string;
   readonly code: string;
   readonly message: string;
 }
-
 export interface SyncReport {
   readonly scanned: number;
   readonly indexed: number;
@@ -235,6 +333,7 @@ export interface ObjectFacade {
     signal?: AbortSignal,
   ): Promise<{ objects: readonly StoredObject[]; total: number }>;
   search(request: SearchRequest, signal?: AbortSignal): Promise<SearchResponse>;
+  relations(request: RelationsRequest, signal?: AbortSignal): Promise<RelationsResponse>;
   resync(signal?: AbortSignal): Promise<SyncReport>;
   status(): Record<string, unknown>;
   close(): Promise<void>;

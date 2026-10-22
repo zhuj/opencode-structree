@@ -165,6 +165,38 @@ function assertJsonValue(value: unknown, path: string, ancestors = new Set<objec
   }
 }
 
+/**
+ * Checks one finite field path without enumerating the schema's leaves. A recursive
+ * schema has infinitely many paths, but a relation descriptor names only a finite one.
+ * The AST/segment guard stops a suspension cycle that cannot advance through that path.
+ */
+function schemaHasPath(schema: ObjectDefinition["schema"], path: string): boolean {
+  const segments = ["relations", ...path.split(".")];
+  const visited = new WeakMap<SchemaAST.AST, Set<number>>();
+  const visit = (ast: SchemaAST.AST, index: number): boolean => {
+    if (index === segments.length) return true;
+    if (ast._tag === "Suspend") {
+      const seenAt = visited.get(ast) ?? new Set<number>();
+      if (seenAt.has(index)) return false;
+      seenAt.add(index);
+      visited.set(ast, seenAt);
+      try {
+        return visit(ast.thunk(), index);
+      } catch {
+        return false;
+      }
+    }
+    if (ast._tag === "Union") return ast.types.some((member) => visit(member, index));
+    if (ast._tag !== "Objects") return false;
+    const segment = segments[index];
+    if (segment === undefined) return true;
+    return ast.propertySignatures.some(
+      (signature) => signature.name === segment && visit(signature.type, index + 1),
+    );
+  };
+  return visit(Schema.toType(schema).ast, 0);
+}
+
 export class ObjectRegistry {
   private readonly entries = new Map<string, ObjectDefinition>();
 
@@ -216,8 +248,37 @@ export class ObjectRegistry {
         `Definition '${definition.name}' schema is missing required base field(s): ${fields.join(", ")}.`,
       );
     }
+    // A descriptor that names a field the schema does not provide would silently
+    // contribute no edges, so the mistake is reported at registration instead. Check
+    // only declared finite paths; enumerating every leaf would not terminate for a
+    // recursive relation schema, especially when no descriptors are supplied.
+    for (const descriptor of definition.relations ?? []) {
+      if (!schemaHasPath(definition.schema, descriptor.path))
+        throw new FrameworkError(
+          "INVALID_DEFINITION",
+          `Definition '${definition.name}' declares relation '${descriptor.path}', which its schema does not provide.`,
+        );
+    }
     this.entries.set(definition.name, Object.freeze({ ...definition }));
     return this;
+  }
+
+  /**
+   * Checks that every relation target names a registered type. A target type may be
+   * registered after the definition that names it, so this runs once the registry is
+   * complete rather than at registration.
+   */
+  assertRelationTargets(): void {
+    for (const definition of this.entries.values()) {
+      for (const descriptor of definition.relations ?? []) {
+        if (!this.entries.has(descriptor.targetType))
+          throw new FrameworkError(
+            "INVALID_DEFINITION",
+            `Definition '${definition.name}' declares relation '${descriptor.path}' with the unknown target type '${descriptor.targetType}'.`,
+            { registeredTypes: [...this.entries.keys()].sort() },
+          );
+      }
+    }
   }
 
   get(name: string): ObjectDefinition {
