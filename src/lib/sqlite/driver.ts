@@ -21,7 +21,7 @@ export interface SqlDatabase {
   exec(sql: string): unknown;
   loadExtension(path: string): unknown;
   transaction<A>(body: () => A): SqlTransaction<A>;
-  /** Bun does not expose JavaScript UDF registration; callers must check this capability. */
+  /** JavaScript UDF registration is runtime-dependent; callers must check this capability. */
   function?(
     name: string,
     options: { deterministic?: boolean },

@@ -625,12 +625,25 @@ for (const driver of ["better-sqlite3", "bun"] as const) {
 
     test("REGEXP capability is available only when the driver supports function registration", () => {
       const database = open(driver);
-      expect(database.regexpAvailable).toBe(driver === "better-sqlite3");
+      expect(database.regexpAvailable).toBe(typeof database.raw.function === "function");
       if (!database.regexpAvailable) return;
       database.items.create(item());
       expect(database.items.readAll(Filter.regex("name", "^alp"))).toHaveLength(1);
       expect(database.items.readAll(Filter.regex("name", "["))).toEqual([]);
       expect(database.items.readAll(Filter.regex("name", "(a+)+$"))).toEqual([]);
+    });
+
+    test("REGEXP registration can be explicitly disabled", () => {
+      const database = new Database(
+        { driver, path: ":memory:", busyTimeoutMs: 1000 },
+        { registerRegexp: false },
+      );
+      openDatabases.push(database);
+      database.initialize();
+      expect(database.regexpAvailable).toBe(false);
+      expect(() => database.raw.prepare("SELECT 'alpha' REGEXP '^alp'").get()).toThrow(
+        "no such function",
+      );
     });
   });
 }
