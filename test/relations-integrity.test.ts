@@ -166,7 +166,7 @@ describe("relation graph integrity", () => {
     });
   });
 
-  test("an invalid source file refuses a partial graph answer", async () => {
+  test("a recoverable source warns that the graph is incomplete without hiding unrelated edges", async () => {
     const { framework, directory } = await fixture();
     await framework.create("adr", adr("a"));
     await framework.create("contract", contract("c", { commitsTo: ["a"] }));
@@ -177,15 +177,16 @@ describe("relation graph integrity", () => {
     );
     await framework.resync();
 
-    const failure = await framework
-      .relations({ type: "adr", id: "a", mode: "impact" })
-      .catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(FrameworkError);
-    expect(failure).toMatchObject({ code: "SOURCE_CONFLICT" });
-    expect((failure as FrameworkError).details.issues).toBeArray();
+    const result = await framework.relations({ type: "adr", id: "a", mode: "impact" });
+    expect(result.complete).toBe(false);
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ path: "contracts/nested/invalid.md", code: "YAML" }),
+    );
+    expect(result.edges).toHaveLength(1);
+    expect(result.edges[0]).toMatchObject({ from: { id: "c" }, to: { id: "a" } });
   });
 
-  test("an invalid root source reports the scan issue instead of NOT_FOUND", async () => {
+  test("a partial root reports recovery warnings rather than NOT_FOUND", async () => {
     const { framework, directory } = await fixture();
     await framework.create("adr", adr("a"));
     await writeFile(
@@ -193,12 +194,15 @@ describe("relation graph integrity", () => {
       "---\nid: a\nname: a\ntitle: 123\ndescription: d\ncreatedAt: 2026-10-15T12:00:00.000Z\nupdatedAt: 2026-10-15T12:00:00.000Z\nretiredAt: null\ntags: {}\nmetadata: {}\nrelations:\n  commitment:\n    scenarios: []\n  partOf: null\n  dependsOn: []\n---\nInvalid title type.\n",
     );
 
-    const failure = await framework
-      .relations({ type: "adr", id: "a", mode: "impact" })
-      .catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(FrameworkError);
-    expect(failure).toMatchObject({ code: "SOURCE_CONFLICT" });
-    expect((failure as FrameworkError).details.issues).toBeArray();
+    const result = await framework.relations({ type: "adr", id: "a", mode: "impact" });
+    expect(result).toMatchObject({
+      complete: false,
+      root: { id: "a", name: "a", title: "a" },
+      edges: [],
+    });
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ path: "adrs/a.md", code: "VALIDATION" }),
+    );
   });
 
   test("a valid relation edit on disk is visible without a resync", async () => {

@@ -123,14 +123,15 @@ create, get, update and delete, the framework lowercases the object id and every
 relation identifier below the tool boundary, then validates the lowercased form.
 Relation targets are not validated for existence, so a valid identifier naming
 a nonexistent target is stored after normalization. Created objects use
-`<type directory>/<id>.md`; reconciliation corrects a differing base name in its
-existing directory and updates the indexed path. A filesystem that folds case or
+`<type directory>/<id>.md`; reconciliation corrects a differing base name only for
+validated objects, in the existing directory, and updates the indexed path.
+Partial source files keep their existing names. A filesystem that folds case or
 normalizes names may spell the name differently while the target still names the
 same file. The scanner accepts that spelling, leaves the file unchanged and
 indexed at its actual path, and reports no issue. Only a different file holding
 the target name is a conflict: both files remain unchanged and the object is
 excluded with `RENAME_CONFLICT`. Nothing is overwritten.
-Resync can therefore rename source files, not only write derived state.
+Resync can therefore rename validated source files, not only write derived state.
 A retired object remains
 listed and searchable; callers check `retiredAt` to exclude it. The retirement
 wording publishes existing behavior, not a change to listing or search.
@@ -141,7 +142,7 @@ client depends on most:
 
 | Method | Contract |
 | --- | --- |
-| `list(type, {limit?, offset?}, signal?)` | Valid filesystem objects in identifier order. `limit` is an integer from 1 to 1000 and defaults to 50; `offset` is 0 or more and defaults to 0. A value outside those ranges fails with `VALIDATION`. |
+| `list(type, {limit?, offset?}, signal?)` | Readable filesystem documents, including partial documents, in identifier order. `limit` is an integer from 1 to 1000 and defaults to 50; `offset` is 0 or more and defaults to 0. A value outside those ranges fails with `VALIDATION`. |
 | `search(request, signal?)` | Distinct objects from the derived index. `topN` is an integer from 1 to `config.search.maxTopN` and defaults to `config.search.defaultTopN`. See the exact mode and discovery guidance below. |
 | `status()` | Index and synchronization state, registry, embedding metadata, historical reports and bounded known issues, not a provider-readiness verdict. |
 
@@ -153,6 +154,53 @@ automatically call preparation or fetch model assets; a library host decides
 whether to call this method. The CLI calls it for `serve` and `sync`, not for
 the read-only `status` report, and keeps serving full-text search after a
 reported preparation failure.
+
+### Partial reads, strict writes
+
+Get/list and index discovery accept readable Markdown even when frontmatter is
+absent, malformed, nonmapping, or missing required schema fields. Partial results
+expose recoverable metadata and diagnostics without claiming a validated
+`BaseObject`. Raw source is available on a direct partial read; a malformed or
+unterminated block does not erase the document's content.
+
+The registered directory supplies type. Use a usable explicit header id when
+available; otherwise the filename stem is the inferred read/search id. Its origin
+is explicit, not a new source field. No timestamps, relation values, or other
+required fields are synthesized. Reconciliation indexes recoverable text but
+does not normalize, rewrite, or rename a partial source file. A later external
+repair is picked up by the same discovery/reconciliation path.
+
+`ReadObject` is `StoredObject | PartialStoredObject`. Test `document.partial`
+before assuming required domain fields exist. A partial result has
+`partial: true`, recovered JSON-compatible `object` fields with the resolved
+`object.id`, `identity: {source: "frontmatter" | "filename", id, type}`,
+`issues: {code, message}[]`, `body`, `raw`, `path`, `checksum`, and `type`.
+Recovered dates remain JSON strings. An absent or unsafe field is omitted,
+not filled with a default. Reduced MCP listings omit both `body` and `raw`;
+direct partial get preserves raw source. Partial search results carry the
+metadata/diagnostics branch but no dedicated raw text field.
+
+```ts
+const document = await objects.get("note", "scratch");
+if (document.partial) {
+  console.log(document.identity.source, document.raw, document.issues);
+} else {
+  console.log(document.object.createdAt.toISOString());
+}
+```
+
+Create/update input validation remains strict, and mutation callers must still
+respect checksums and identity ambiguity. Parser/schema diagnostics are distinct
+from a failure to read the filesystem: confinement, byte/alias bounds, UTF-8,
+cancellation, and real I/O errors retain their safeguards. Do not infer absence
+from an incomplete filesystem scan.
+
+Both update and delete refuse partial source revisions with `SOURCE_CONFLICT`;
+having an explicit id does not bypass this guard. Repair the source explicitly
+before submitting a validated mutation. Relation queries can inspect safely
+recovered descriptor-shaped values; if partial sources affect graph assurance,
+the response carries `complete: false` and source issues rather than claiming
+the graph is complete.
 
 For local ONNX, preparation ensures the pinned snapshot files exist, fetching
 missing files when `embeddings.localFilesOnly` is false (the built-in default).
@@ -166,7 +214,7 @@ See [embedding semantics](embeddings.md#local-onnx) and
 
 The generated tools publish this search and mode guidance verbatim:
 
-> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
+> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking, including readable partial documents. Missing or malformed frontmatter does not by itself exclude a document; partial hits expose recovered fields, identity origin and issues. Display label fallbacks are derived, not validated source facts. Search is not exhaustive: topN is a maximum, recent objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate readable objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true; search never returns a dedicated raw field. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
 
 > Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; the local ONNX provider fetches its pinned model snapshot at startup when the snapshot is missing and downloads are permitted. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. In hybrid mode a query with no lexical tokens still runs the semantic ranking, and those hits carry no lexical evidence. Valid requests with types: [] return no hits without invoking a provider.
 
@@ -182,8 +230,8 @@ The status description is:
 
 The configured provider label and the instance's fingerprint/dimensions are
 metadata, not usability guarantees. Query encoder overflow maps to `INTERNAL`,
-not `VALIDATION`. A successful, fully paginated source listing enumerates valid
-objects; incomplete or failed listing cannot establish absence. Revalidation
+not `VALIDATION`. A successful, fully paginated source listing enumerates readable
+objects, including partial results; incomplete or failed listing cannot establish absence. Revalidation
 does not guarantee against subsequent source edits. Resync is a write, not a
 prerequisite for read-only investigation.
 

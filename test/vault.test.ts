@@ -142,7 +142,10 @@ describe("generic Markdown vault", () => {
     expect(await fs.readdir(root)).toEqual([]);
     const created = await vault.create("valid.md", input("header-\ud800"), "Emoji 😀 is valid.\n");
     expect(created.header.slug).toBe("header-\ud800");
-    expect((await vault.read("valid.md")).header.slug).toBe("header-\ud800");
+    const read = await vault.read("valid.md");
+    expect(read.partial).not.toBe(true);
+    if (read.partial) throw new Error("Expected a validated header");
+    expect(read.header.slug).toBe("header-\ud800");
     expect((await vault.read("valid.md")).body).toBe("Emoji 😀 is valid.\n");
   });
 
@@ -241,8 +244,12 @@ describe("generic Markdown vault", () => {
     expect(read.body).toBe("Body\r\r\n\r\r\n");
   });
 
-  test("duplicate YAML keys and alias expansion remain strict", () => {
-    expect(() => codec().parse("---\nslug: a\nslug: b\n---\n")).toThrow();
+  test("duplicate YAML keys and alias expansion produce partial reads without unsafe metadata", () => {
+    expect(codec().parse("---\nslug: a\nslug: b\n---\n")).toMatchObject({
+      partial: true,
+      json: {},
+      issues: [{ code: "YAML" }],
+    });
     const objectCodec = new MarkdownCodec(
       {
         decode: (value: unknown) => value as Record<string, unknown>,
@@ -250,9 +257,20 @@ describe("generic Markdown vault", () => {
       },
       { maxAliasCount: 0 },
     );
-    expect(() => objectCodec.parse("---\na: &items [1, 2, 3]\nb: *items\n---\n")).toThrow();
-    expect(() => objectCodec.parse("---\n- list\n- header\n---\n")).toThrow();
-    expect(() => objectCodec.parse("missing delimiter")).toThrow();
+    expect(objectCodec.parse("---\na: &items [1, 2, 3]\nb: *items\n---\n")).toMatchObject({
+      partial: true,
+      json: {},
+      issues: [{ code: "YAML" }],
+    });
+    expect(objectCodec.parse("---\n- list\n- header\n---\n")).toMatchObject({
+      partial: true,
+      json: {},
+      issues: [{ code: "FRONTMATTER" }],
+    });
+    expect(objectCodec.parse("missing delimiter")).toMatchObject({
+      partial: true,
+      body: "missing delimiter",
+    });
   });
 
   test("invalid UTF-8 and oversized files are preserved and excluded with issues", async () => {
@@ -274,14 +292,22 @@ describe("generic Markdown vault", () => {
     expect(await fs.readFile(path.join(root, "invalid.md"))).toEqual(invalid);
   });
 
-  test("a malformed document is isolated while an unreadable directory marks the snapshot incomplete", async () => {
+  test("a malformed document is retained while an unreadable directory marks the snapshot incomplete", async () => {
     const { vault, root } = await setup();
     await vault.create("notes/good.md", input(), "kept");
     const malformed = "---\nslug: a\nslug: b\n---\nPreserve me\n";
     await fs.writeFile(path.join(root, "notes", "bad.md"), malformed);
     const scan = await vault.scan("notes");
     expect(scan.complete).toBe(true);
-    expect(scan.documents.map((document) => document.path)).toEqual(["notes/good.md"]);
+    expect(scan.documents.map((document) => document.path)).toEqual([
+      "notes/bad.md",
+      "notes/good.md",
+    ]);
+    expect(await vault.read("notes/bad.md")).toMatchObject({
+      partial: true,
+      body: "Preserve me\n",
+      raw: malformed,
+    });
     expect(scan.issues).toMatchObject([{ path: "notes/bad.md", code: "YAML" }]);
     expect(await fs.readFile(path.join(root, "notes", "bad.md"), "utf8")).toBe(malformed);
     await fs.rename(path.join(root, "notes"), path.join(root, "saved-notes"));

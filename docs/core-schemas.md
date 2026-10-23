@@ -14,6 +14,15 @@ This implementation follows the supplied schema specification dated **2026-10-15
 
 The persistence/MCP codec encodes dates as ISO strings and applies JSON representability rules at the boundary. Each concrete schema spreads `...BaseObjectSchema.fields` and adds a required `relations` struct. All fields below are relative to `relations`, and all keys are required. `?` below means a required nullable value, not an omitted key.
 
+These requirements govern validated objects and create/update inputs. Reads and
+index discovery also accept incomplete documents: absent/broken frontmatter or
+missing required fields yield a partial result with recovered JSON-compatible
+fields and issues, not a falsely validated instance of these schemas. A usable
+explicit id is preferred; otherwise the lowercase filename stem is an explicitly
+inferred read/search identity. No missing dates, relationships, or other values
+are invented, and partial source files are not automatically rewritten or renamed.
+See [partial reads, strict writes](library.md#partial-reads-strict-writes).
+
 A caller may send an id in any case: it is lowercased first, and the lowercased form is checked against the domain. An id is refused only if that form breaks a rule, for example a path separator, a leading dot, a reserved device name in any case, or more than 200 UTF-8 bytes after lowercasing. The stored id MUST satisfy all of these:
 
 1. It is not empty and not entirely whitespace.
@@ -28,9 +37,9 @@ A caller may send an id in any case: it is lowercased first, and the lowercased 
 
 At the very start of create, get, update and delete, the framework lowercases the object id and every relation identifier. This happens below the tool boundary, so tools and library calls agree: creating `MyThing` stores `mything`, and getting `MyThing` finds it. Two ids differing only in case are one id; the second create fails with `ALREADY_EXISTS` on every filesystem.
 
-An id read from a file is checked as written. A hand-written file whose frontmatter id is not lowercase is an invalid object reported as a scan issue, not normalized. The framework normalizes what it writes but reports what a human wrote rather than rewriting authoritative file content.
+An id read from a file is checked as written. A hand-written file whose frontmatter id is not usable as a stored id is reported as a partial document with filename fallback, not normalized in the source. The framework normalizes what it writes but reports what a human wrote rather than rewriting authoritative file content.
 
-A created object is stored at `<type directory>/<id>.md`. The scanner corrects a differing base name to `<id>.md` in the file's existing directory and updates the indexed path, because the content is the source of truth. A filesystem that folds case or normalizes names may spell the name differently while the target still names the same file. The scanner accepts that spelling, leaves the file unchanged and indexed at its actual path, and reports no issue. It never overwrites: only a different file holding the target name is a conflict, leaving both files unchanged and excluding the object with `RENAME_CONFLICT`. Subdirectories remain supported; a resync can rename files. See [decision 0013](decisions/0013-name-the-file-after-the-id.md).
+A created object is stored at `<type directory>/<id>.md`. For validated objects only, the scanner corrects a differing base name to `<id>.md` in the file's existing directory and updates the indexed path, because the content is the source of truth. Partial documents keep their existing filenames. A filesystem that folds case or normalizes names may spell the name differently while the target still names the same file. The scanner accepts that spelling, leaves the file unchanged and indexed at its actual path, and reports no issue. It never overwrites: only a different file holding the target name is a conflict, leaving both files unchanged and excluding the object with `RENAME_CONFLICT`. Subdirectories remain supported; a resync can rename validated files. See [decision 0013](decisions/0013-name-the-file-after-the-id.md).
 
 The `retiredAt` description is:
 
@@ -78,7 +87,7 @@ A `uses` relation is stored on the provider, so it is the only kind whose impact
 
 Three properties of these schemas are part of the published surface and not only of this document:
 
-- Object ids are stable, unique within their type, and are the only handle: the file name is the id, an id is always lowercase, and the scanner renames a file whose name does not match its id.
+- Object ids are stable and unique within their type. Reads prefer a usable frontmatter id; otherwise a lowercase filename stem supplies an explicitly inferred identity. The scanner may align filenames only for validated objects, never for partial documents.
 - Relation targets are not validated. An invalid identifier is refused before any target is considered; a valid required owner ID may name a target that does not exist yet and is stored after lowercasing.
 - The type names are published as an enum in the search tool's `types` parameter, so an unknown name is rejected by input validation with the full list in the message. A name that reaches the framework anyway fails with `UNKNOWN_TYPE`, and the error details carry `registeredTypes`, the sorted registered type names.
 
@@ -101,7 +110,7 @@ the optional lexical evidence field described below.
 
 `objects_search`:
 
-> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
+> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking, including readable partial documents. Missing or malformed frontmatter does not by itself exclude a document; partial hits expose recovered fields, identity origin and issues. Display label fallbacks are derived, not validated source facts. Search is not exhaustive: topN is a maximum, recent objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate readable objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true; search never returns a dedicated raw field. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
 
 `objects_status`:
 

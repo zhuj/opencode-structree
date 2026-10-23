@@ -302,14 +302,14 @@ describe("filesystem-authoritative framework", () => {
     await writeFile(path.join(root, created.path), "not a valid document");
     const report = await framework.resync();
     expect(report.issues).toContainEqual(
-      expect.objectContaining({ path: "projects/other.md", code: "RENAME_CONFLICT" }),
+      expect.objectContaining({ path: "projects/other.md", code: "DUPLICATE_ID" }),
     );
     expect(framework.status().objects).toBe(0);
     expect(await readFile(path.join(root, "projects/other.md"), "utf8")).toBe(original);
     expect(await readFile(path.join(root, created.path), "utf8")).toBe("not a valid document");
   });
 
-  test("reconciliation excludes invalid frontmatter ids without renaming the source", async () => {
+  test("reconciliation indexes invalid frontmatter ids by filename without renaming the source", async () => {
     const { framework, root } = await fixture();
     const created = await framework.create("project", project());
     await framework.resync();
@@ -322,12 +322,17 @@ describe("filesystem-authoritative framework", () => {
     expect(report.issues).toContainEqual(
       expect.objectContaining({ path: created.path, code: "VALIDATION" }),
     );
-    expect(framework.status().objects).toBe(0);
+    expect(framework.status().objects).toBe(1);
+    expect(await framework.get("project", "p-1")).toMatchObject({
+      partial: true,
+      identity: { source: "filename" },
+      object: { id: "p-1" },
+    });
     expect(await readFile(path.join(root, created.path), "utf8")).toBe(raw);
     expect(await readdir(path.join(root, "projects"))).toEqual(["p-1.md"]);
   });
 
-  test("reconciliation reports a hand-written mixed-case id without indexing or rewriting it", async () => {
+  test("reconciliation indexes a hand-written mixed-case id as partial without rewriting it", async () => {
     const { framework, root } = await fixture();
     const created = await framework.create("project", project("mything"));
     await framework.resync();
@@ -340,7 +345,12 @@ describe("filesystem-authoritative framework", () => {
     expect(report.issues).toContainEqual(
       expect.objectContaining({ path: created.path, code: "VALIDATION" }),
     );
-    expect(framework.status().objects).toBe(0);
+    expect(framework.status().objects).toBe(1);
+    expect(await framework.get("project", "mything")).toMatchObject({
+      partial: true,
+      identity: { source: "frontmatter" },
+      object: { id: "mything" },
+    });
     expect(await readFile(path.join(root, created.path), "utf8")).toBe(raw);
     expect(await readdir(path.join(root, "projects"))).toEqual(["mything.md"]);
   });

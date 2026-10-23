@@ -16,6 +16,7 @@ import type {
   ObjectFacade,
   RelationsRequest,
   RelationsResponse,
+  SearchHit,
   SearchRequest,
   SearchResponse,
   StoredObject,
@@ -193,6 +194,96 @@ async function connected<A>(
 }
 
 describe("official MCP adapter", () => {
+  test("partial search hits require metadata after type narrowing and complete hits remain compatible", () => {
+    const complete = {
+      type: "project",
+      id: "p-1",
+      name: "demo",
+      title: "Demo",
+      path: "project.md",
+      checksum: "revision-1",
+      score: 1,
+      fulltextRank: 1,
+      semanticDistance: null,
+      matchedChunk: null,
+    };
+    const rejectsMissingMetadata: typeof complete & { partial: true } extends SearchHit
+      ? false
+      : true = true;
+    expect(rejectsMissingMetadata).toBe(true);
+    const summary = (hit: SearchHit): string => {
+      if (hit.partial)
+        return `${hit.identity.type}:${hit.identity.id}:${hit.object.id}:${hit.issues.length}`;
+      return hit.id;
+    };
+    expect(summary(complete)).toBe("p-1");
+    expect(
+      summary({
+        ...complete,
+        partial: true,
+        object: { id: "p-1" },
+        identity: { source: "filename", id: "p-1", type: "project" },
+        issues: [],
+      }),
+    ).toBe("project:p-1:p-1:0");
+  });
+
+  test("search output rejects incomplete partial metadata instead of accepting the complete branch", async () => {
+    const facade = new MemoryFacade();
+    const hit = {
+      type: "project",
+      id: "p-1",
+      name: "demo",
+      title: "Demo",
+      path: "project.md",
+      checksum: "revision-1",
+      score: 1,
+      fulltextRank: 1,
+      semanticDistance: null,
+      matchedChunk: null,
+    };
+    const metadata = {
+      object: { id: "p-1" },
+      identity: { source: "filename", id: "p-1", type: "project" },
+      issues: [],
+    };
+    let supplied: Record<string, unknown> = {};
+    // A custom facade can violate its declared contract at runtime. The MCP output
+    // boundary must reject that payload rather than silently matching a wider branch.
+    facade.search = async () => ({
+      mode: "fulltext",
+      hits: [{ ...hit, ...supplied }],
+      indexGeneration: 2,
+    });
+    await connected(async (client) => {
+      for (const fields of [
+        { partial: true },
+        { partial: true, object: metadata.object, identity: metadata.identity },
+        { partial: true, object: metadata.object, issues: metadata.issues },
+        { partial: true, identity: metadata.identity, issues: metadata.issues },
+      ]) {
+        supplied = fields;
+        const response = await client.callTool({
+          name: "objects_search",
+          arguments: { query: "demo" },
+        });
+        expect(response.isError).toBe(true);
+        expect(JSON.stringify(response.content)).toContain("Output validation error");
+      }
+      for (const fields of [{}, { partial: true, ...metadata }]) {
+        supplied = fields;
+        const response = await client.callTool({
+          name: "objects_search",
+          arguments: { query: "demo" },
+        });
+        expect(response.isError).not.toBe(true);
+        expect(response.structuredContent).toHaveProperty("hits.0.id", "p-1");
+        if ("partial" in fields)
+          expect(response.structuredContent).toHaveProperty("hits.0.identity", metadata.identity);
+        else expect(response.structuredContent).not.toHaveProperty("hits.0.partial");
+      }
+    }, facade);
+  });
   test("advertises optional string-or-null lexical excerpts and validates supplied or absent fields", async () => {
     const facade = new MemoryFacade();
     const hit = {
@@ -217,20 +308,24 @@ describe("official MCP adapter", () => {
       const { tools } = await client.listTools();
       expect(tools).toHaveLength(65);
       const search = tools.find((tool) => tool.name === "objects_search")!;
+      for (const branch of [0, 1]) {
+        const prefix = `properties.hits.items.anyOf.${branch}`;
+        expect(search.outputSchema).toHaveProperty(
+          `${prefix}.required`,
+          expect.not.arrayContaining(["fulltextExcerpt"]),
+        );
+        expect(search.outputSchema).toHaveProperty(
+          `${prefix}.properties.fulltextExcerpt.anyOf`,
+          expect.arrayContaining([{ type: "string" }, { type: "null" }]),
+        );
+      }
       expect(search.outputSchema).toHaveProperty(
-        "properties.hits.items.properties.fulltextExcerpt",
+        "properties.hits.items.anyOf.0.properties.partial.enum",
+        [false],
       );
-      const schema = search.outputSchema as {
-        properties: {
-          hits: { items: { required: string[]; properties: Record<string, unknown> } };
-        };
-      };
-      expect(schema.properties.hits.items.required).not.toContain("fulltextExcerpt");
-      expect(JSON.stringify(schema.properties.hits.items.properties.fulltextExcerpt)).toContain(
-        '"string"',
-      );
-      expect(JSON.stringify(schema.properties.hits.items.properties.fulltextExcerpt)).toContain(
-        '"null"',
+      expect(search.outputSchema).toHaveProperty(
+        "properties.hits.items.anyOf.1.required",
+        expect.arrayContaining(["partial", "object", "identity", "issues"]),
       );
       expect(search.description).toContain(
         "`fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.",
@@ -446,7 +541,7 @@ describe("official MCP adapter", () => {
           'Defaults to hybrid when the framework has a provider instance, otherwise fulltext. Semantic/hybrid evaluation requires a working provider; the local ONNX provider fetches its pinned model snapshot at startup when the snapshot is missing and downloads are permitted. Use explicit mode: "fulltext" for embedding-free queries or after EMBEDDINGS_DISABLED/EMBEDDINGS_UNAVAILABLE. In hybrid mode a query with no lexical tokens still runs the semantic ranking, and those hits carry no lexical evidence. Valid requests with types: [] return no hits without invoking a provider.',
         );
         expect(search.description).toBe(
-          "Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.",
+          "Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking, including readable partial documents. Missing or malformed frontmatter does not by itself exclude a document; partial hits expose recovered fields, identity origin and issues. Display label fallbacks are derived, not validated source facts. Search is not exhaustive: topN is a maximum, recent objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate readable objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true; search never returns a dedicated raw field. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.",
         );
         expect(tools.find((tool) => tool.name === "objects_status")?.description).toBe(
           "Show index and synchronization state, embedding configuration/identity, last reports, and bounded known issues with totals, truncation and per-code counts. This call neither checks model files nor runs inference. Provider metadata, zero pending embeddings and dirty: false do not prove future inference success or complete discovery. objects_resync writes derived state and returns the full issue list.",
@@ -461,14 +556,16 @@ describe("official MCP adapter", () => {
       expect(all.isError).not.toBe(true);
       expect(all.structuredContent).toHaveProperty("definitions.length", 12);
       const guidance = (all.structuredContent as { guidance: string[] }).guidance;
-      expect(guidance).toHaveLength(8);
+      expect(guidance).toHaveLength(9);
       expect(guidance[0]).toBe(
-        "Object ids are stable, unique within their type, and are the only handle: the file name is the id, an id is always lowercase, and the scanner renames a file whose name does not match its id.",
+        "Object ids are stable and unique within their type. Reads prefer a usable frontmatter id; otherwise a lowercase filename stem supplies an explicitly inferred identity. The scanner may align filenames only for validated objects, never for partial documents.",
       );
-      expect(guidance[6]).toBe(
+      expect(guidance[1]).toContain("includeBody:false listings omit both body and raw");
+      expect(guidance[3]).toContain("create/update inputs remain complete and schema-validated");
+      expect(guidance[7]).toBe(
         "Search is not exhaustive: it is capped by topN and can miss a stale hit, so confirm a known id with get.",
       );
-      expect(guidance[7]).toBe(
+      expect(guidance[8]).toBe(
         "Use objects_relations to answer what a change reaches and what justifies an object; it is the exact path for relation questions, where search is a heuristic.",
       );
       const single = await client.callTool({
@@ -478,7 +575,7 @@ describe("official MCP adapter", () => {
       expect(single.isError).not.toBe(true);
       expect(single.structuredContent).toHaveProperty("definitions.length", 1);
       expect(single.structuredContent).toHaveProperty("definitions.0.name", "project");
-      expect(single.structuredContent).toHaveProperty("guidance.length", 8);
+      expect(single.structuredContent).toHaveProperty("guidance.length", 9);
       const unknown = await client.callTool({
         name: "objects_definitions",
         arguments: { type: "does_not_exist" },
@@ -502,7 +599,7 @@ describe("official MCP adapter", () => {
         "A retired object is still listed; check its retiredAt field to exclude it.",
       );
       expect(list.description).toContain(
-        "Set includeBody to false to omit the Markdown body and return only identity, title, path and checksum.",
+        "Set includeBody to false to omit the Markdown body; reduced listings also omit partial raw content, which remains available on direct get.",
       );
       expect(list.inputSchema).toHaveProperty("properties.includeBody.type", "boolean");
     });

@@ -1,10 +1,12 @@
+import { isValidId } from "./base-schema.ts";
+import { documentLabels } from "./read-document.ts";
 import type {
   ObjectDefinition,
+  ReadDocument,
   RelationDescriptor,
   RelationKind,
   RelationNode,
   RelationsMode,
-  SourceDocument,
 } from "./types.ts";
 
 export interface InternalEdge {
@@ -119,7 +121,7 @@ const targetIds = (value: unknown, cardinality: RelationDescriptor["cardinality"
  * targets as written and never checks that they name an object of the declared type.
  */
 export function buildRelationGraph(
-  documents: readonly SourceDocument[],
+  documents: readonly ReadDocument[],
   definitions: readonly ObjectDefinition[],
 ): RelationGraph {
   const descriptors = new Map<string, readonly RelationDescriptor[]>();
@@ -134,9 +136,7 @@ export function buildRelationGraph(
   for (const document of documents) {
     const node: RelationNode = {
       type: document.type,
-      id: document.object.id,
-      name: document.object.name,
-      title: document.object.title,
+      ...documentLabels(document),
     };
     const key = nodeKey(node.type, node.id);
     nodes.set(key, node);
@@ -153,7 +153,18 @@ export function buildRelationGraph(
     if (from === undefined) continue;
     for (const descriptor of descriptors.get(document.type) ?? []) {
       const declared = descriptor.targetType;
-      for (const id of targetIds(readPath(relations, descriptor.path), descriptor.cardinality)) {
+      const value = readPath(relations, descriptor.path);
+      // Partial headers have not passed a relation codec. Accept only a complete,
+      // correctly shaped field of portable target ids for the registered descriptor.
+      if (
+        document.partial &&
+        !(descriptor.cardinality === "one"
+          ? value === null || (typeof value === "string" && isValidId(value))
+          : Array.isArray(value) &&
+            value.every((item) => typeof item === "string" && isValidId(item)))
+      )
+        continue;
+      for (const id of targetIds(value, descriptor.cardinality)) {
         const owners = typesById.get(id);
         const ownerTypes = owners === undefined ? [] : [...owners];
         const ownerCount = ownerTypes.length;

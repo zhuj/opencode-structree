@@ -2,23 +2,45 @@
 import { StdioServerTransport, serveStdio } from "@modelcontextprotocol/server/stdio";
 import { createFramework } from "./framework.ts";
 import { loadConfig, loadDefaultConfig } from "./lib/config.ts";
-import { createMcpServer } from "./lib/mcp.ts";
+import { parseCommandOptions, runMaterializationCommand } from "./materialization-cli.ts";
+import { createMaterializationServer } from "./materialization-server.ts";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const command = args[0] ?? "serve";
   if (["--help", "-h", "help"].includes(command)) {
     process.stdout.write(
-      "Usage: bun src/cli.ts <serve|sync|status> [--config <file>]\n\nserve: MCP over stdio\nsync: reconcile files, report errors, exit\nstatus: startup reconciliation and current index status\n\nWithout --config the built-in defaults apply. The optional .local/.structree/config.yaml is read from the working directory when it exists.\n",
+      "Usage: bun src/cli.ts <serve|sync|status> [--config <file>]\n       bun src/cli.ts <validate|materialize> [--config <file>] [--check] [--out <path>]\n\nserve: MCP over stdio\nsync: reconcile files, report errors, exit\nstatus: startup reconciliation and current index status\nvalidate: read-only source validation\nmaterialize: generate data-only artifacts [--check] [--out <path>]\n\nWithout --config the built-in defaults apply. The optional .local/.structree/config.yaml is read from the working directory when it exists. Materialized output defaults to .local/.structree/materialized under the working directory. --check reports drift without writing.\n",
     );
     return;
   }
-  if (!["serve", "sync", "status"].includes(command))
+  if (!["serve", "sync", "status", "validate", "materialize"].includes(command))
     throw new Error(`Unknown command: ${command}`);
   const tail = args.slice(1);
-  if (tail.length && (tail.length !== 2 || tail[0] !== "--config" || !tail[1]))
+  const isMaterialization = command === "validate" || command === "materialize";
+  if (
+    !isMaterialization &&
+    tail.length &&
+    (tail.length !== 2 || tail[0] !== "--config" || !tail[1])
+  )
     throw new Error("Expected --config <filename>.");
-  const config = tail[1] === undefined ? await loadDefaultConfig() : await loadConfig(tail[1]);
+  const options = isMaterialization
+    ? parseCommandOptions(command, tail)
+    : { configFile: tail[1], outputDirectory: undefined, check: false };
+  const config =
+    options.configFile === undefined
+      ? await loadDefaultConfig()
+      : await loadConfig(options.configFile);
+  if (command === "validate" || command === "materialize") {
+    process.exitCode = await runMaterializationCommand(command, {
+      vaultRoot: config.root,
+      ...(options.outputDirectory === undefined
+        ? {}
+        : { outputDirectory: options.outputDirectory }),
+      check: options.check,
+    });
+    return;
+  }
   const framework = await createFramework({
     waitForStartup: command !== "serve",
     config: {
@@ -54,7 +76,7 @@ async function main(): Promise<void> {
       await framework.close();
     }
   };
-  const handle = serveStdio(() => createMcpServer(framework, config.server, config.mcp), {
+  const handle = serveStdio(() => createMaterializationServer(framework, config), {
     transport,
     onerror: (error) => process.stderr.write(`[mcp] ${error.message}\n`),
   });

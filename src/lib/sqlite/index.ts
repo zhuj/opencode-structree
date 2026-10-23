@@ -1,11 +1,12 @@
 import { objectKey } from "../filesystem.ts";
+import { documentLabels } from "../read-document.ts";
 import type {
   EmbeddedChunk,
   FrameworkConfig,
-  SearchHit,
+  ReadDocument,
+  SearchCandidate,
+  SearchCandidateResponse,
   SearchRequest,
-  SearchResponse,
-  SourceDocument,
   SyncIssue,
 } from "../types.ts";
 import { CacheDatabase, type MetadataRow } from "./cache-database.ts";
@@ -89,11 +90,14 @@ export class SqliteIndex {
     }
   }
 
-  upsertDocument(document: SourceDocument): boolean {
+  upsertDocument(document: ReadDocument): boolean {
     this.assertOpen();
     if (document.key !== objectKey(document.type, document.object.id))
       throw new Error("Document key must be the type and encoded id joined by a colon.");
-    const json = JSON.stringify(document.json);
+    const json = JSON.stringify(
+      document.partial ? { ...document.json, id: document.object.id } : document.json,
+    );
+    const labels = documentLabels(document);
     return this.db
       .transaction(() => {
         const previous = this.getRow(document.key);
@@ -113,8 +117,8 @@ export class SqliteIndex {
           object_key: document.key,
           object_type: document.type,
           id: document.object.id,
-          name: document.object.name,
-          title: document.object.title,
+          name: labels.name,
+          title: labels.title,
           path: document.path,
           checksum: document.checksum,
           json,
@@ -240,7 +244,11 @@ export class SqliteIndex {
       .immediate();
   }
 
-  search(request: SearchRequest, queryVector?: Float32Array, fingerprint?: string): SearchResponse {
+  search(
+    request: SearchRequest,
+    queryVector?: Float32Array,
+    fingerprint?: string,
+  ): SearchCandidateResponse {
     this.assertOpen();
     const mode = request.mode ?? "hybrid";
     const topN = request.topN ?? this.searchConfig.defaultTopN;
@@ -289,7 +297,7 @@ export class SqliteIndex {
         entry.semantic = { rank: index + 1, match };
         combined.set(match.row.object_key, entry);
       });
-      const hits = Array.from(combined.values(), (entry): SearchHit => {
+      const hits = Array.from(combined.values(), (entry): SearchCandidate => {
         const semanticMatch = entry.semantic?.match;
         const labels = exactLabels(entry.row);
         let score: number;
@@ -391,7 +399,7 @@ export class SqliteIndex {
     });
   }
 
-  private matchExcerpt(row: SemanticMatch): NonNullable<SearchHit["matchedChunk"]> {
+  private matchExcerpt(row: SemanticMatch): NonNullable<SearchCandidate["matchedChunk"]> {
     const characters = Array.from(row.chunk_text).slice(0, this.searchConfig.maxMatchCharacters);
     return {
       index: row.chunk_index,

@@ -3,10 +3,16 @@ import { isValidId } from "./base-schema.ts";
 import { FrameworkError } from "./errors.ts";
 import type { ObjectRegistry } from "./registry.ts";
 import { SqliteProcessLock } from "./sqlite/process-lock.ts";
-import type { BaseObject, FrameworkConfig, SourceDocument, SyncIssue } from "./types.ts";
+import type {
+  BaseObject,
+  FrameworkConfig,
+  ReadDocument,
+  SourceDocument,
+  SyncIssue,
+} from "./types.ts";
 import { MarkdownCodec } from "./vault/codec.ts";
 import { ConfinedFilesystem } from "./vault/confined-filesystem.ts";
-import { Vault, type VaultDocument } from "./vault/vault.ts";
+import { type ValidVaultDocument, Vault, type VaultDocument } from "./vault/vault.ts";
 
 export { checksum } from "./vault/checksums.ts";
 /**
@@ -34,7 +40,7 @@ export const objectKey = (type: string, id: string): string => {
 };
 
 export interface ScanResult {
-  readonly documents: readonly SourceDocument[];
+  readonly documents: readonly ReadDocument[];
   readonly issues: readonly SyncIssue[];
   readonly complete: boolean;
   readonly scanned: number;
@@ -110,7 +116,32 @@ export class FileStore {
     return vault;
   }
 
-  private source(type: string, document: VaultDocument<BaseObject>): SourceDocument {
+  private source(type: string, document: ValidVaultDocument<BaseObject>): SourceDocument;
+  private source(type: string, document: VaultDocument<BaseObject>): ReadDocument;
+  private source(type: string, document: VaultDocument<BaseObject>): ReadDocument {
+    if (document.partial) {
+      const explicit = document.json.id;
+      const explicitId =
+        typeof explicit === "string" && isValidId(explicit.toLowerCase())
+          ? explicit.toLowerCase()
+          : undefined;
+      const id =
+        explicitId ??
+        path.posix.basename(document.path, path.posix.extname(document.path)).toLowerCase();
+      return {
+        partial: true,
+        type,
+        object: { ...document.json, id },
+        body: document.body,
+        path: document.path,
+        checksum: document.checksum,
+        raw: document.raw,
+        json: document.json,
+        issues: document.issues,
+        identity: { source: explicitId === undefined ? "filename" : "frontmatter", id, type },
+        key: objectKey(type, id),
+      };
+    }
     return {
       type,
       object: document.header,
@@ -127,7 +158,7 @@ export class FileStore {
     return this.files.readText(relative, signal);
   }
 
-  parse(type: string, relative: string, raw: string): SourceDocument {
+  parse(type: string, relative: string, raw: string): ReadDocument {
     return this.source(type, this.vault(type).parse(relative, raw));
   }
 
@@ -139,7 +170,7 @@ export class FileStore {
   async scan(type?: string, signal?: AbortSignal): Promise<ScanResult> {
     // Only an omitted selector means every registered type; an unknown name is an error.
     const definitions = type === undefined ? this.registry.definitions : [this.registry.get(type)];
-    const documents: SourceDocument[] = [];
+    const documents: ReadDocument[] = [];
     const issues: SyncIssue[] = [];
     let complete = true;
     let scanned = 0;
@@ -151,13 +182,13 @@ export class FileStore {
       complete &&= result.complete;
       scanned += result.scanned;
     }
-    const byKey = new Map<string, SourceDocument[]>();
+    const byKey = new Map<string, ReadDocument[]>();
     for (const document of documents) {
       const found = byKey.get(document.key) ?? [];
       found.push(document);
       byKey.set(document.key, found);
     }
-    const unique: SourceDocument[] = [];
+    const unique: ReadDocument[] = [];
     const conflictedKeys: string[] = [];
     for (const group of byKey.values()) {
       if (group.length === 1) unique.push(...group);
@@ -175,7 +206,7 @@ export class FileStore {
     return { documents: unique, issues, complete, scanned, conflictedKeys };
   }
 
-  async get(type: string, id: string, signal?: AbortSignal): Promise<SourceDocument> {
+  async get(type: string, id: string, signal?: AbortSignal): Promise<ReadDocument> {
     this.registry.get(type);
     const scan = await this.scan(type, signal);
     if (!scan.complete)
@@ -183,7 +214,8 @@ export class FileStore {
         "SCAN",
         "Cannot establish object identity while its directory cannot be fully read.",
       );
-    const found = scan.documents.find((document) => document.object.id === id);
+    const targetKey = objectKey(type, id);
+    const found = scan.documents.find((document) => document.key === targetKey);
     if (!found) {
       if (scan.conflictedKeys.includes(objectKey(type, id))) {
         throw new FrameworkError(
@@ -219,7 +251,7 @@ export class FileStore {
     const relative = `${definition.directory}/${object.id}.md`;
     // Publish the validated snapshot captured before asynchronous identity discovery.
     await this.files.write(relative, element.raw, { expectedChecksum: null }, signal);
-    return this.source(type, vault.parse(relative, element.raw));
+    return this.source(type, { path: relative, ...element });
   }
 
   async update(
@@ -234,6 +266,11 @@ export class FileStore {
     const element = vault.codec.serialize(value, body);
     const object = element.header;
     const current = await this.get(type, id, signal);
+    if (current.partial)
+      throw new FrameworkError(
+        "SOURCE_CONFLICT",
+        "Partial documents must be repaired explicitly before mutation.",
+      );
     if (object.id !== id)
       throw new FrameworkError("IMMUTABLE_ID", "An update cannot change object.id.");
     if (object.createdAt.getTime() !== current.object.createdAt.getTime())
@@ -243,7 +280,7 @@ export class FileStore {
         actualChecksum: current.checksum,
       });
     await this.files.write(current.path, element.raw, { expectedChecksum }, signal);
-    return this.source(type, vault.parse(current.path, element.raw));
+    return this.source(type, { path: current.path, ...element });
   }
 
   async delete(
@@ -253,6 +290,11 @@ export class FileStore {
     signal?: AbortSignal,
   ): Promise<void> {
     const current = await this.get(type, id, signal);
+    if (current.partial)
+      throw new FrameworkError(
+        "SOURCE_CONFLICT",
+        "Partial documents must be repaired explicitly before mutation.",
+      );
     if (current.checksum !== expectedChecksum)
       throw new FrameworkError("CHECKSUM_CONFLICT", "The file changed since it was read.", {
         actualChecksum: current.checksum,

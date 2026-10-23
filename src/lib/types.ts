@@ -1,4 +1,5 @@
 import type { Schema } from "effect";
+import type { DocumentIssue, JsonRecord } from "./vault/read-data.ts";
 
 /** The largest number of objects one list call may return. */
 export const LIST_LIMIT_MAX = 1000;
@@ -48,12 +49,40 @@ export interface ObjectDefinition<A extends BaseObject = BaseObject> {
 }
 
 export interface StoredObject<A extends BaseObject = BaseObject> {
+  readonly partial?: false;
   readonly type: string;
   readonly object: A;
   readonly body: string;
   readonly path: string;
   readonly checksum: string;
 }
+
+export interface DocumentIdentity {
+  readonly source: "filename" | "frontmatter";
+  readonly id: string;
+  readonly type: string;
+}
+
+export interface PartialStoredObject {
+  readonly partial: true;
+  readonly type: string;
+  readonly object: JsonRecord & { readonly id: string };
+  readonly body: string;
+  readonly path: string;
+  readonly checksum: string;
+  readonly raw: string;
+  readonly issues: readonly DocumentIssue[];
+  readonly identity: DocumentIdentity;
+}
+
+export type ReadObject = StoredObject | PartialStoredObject;
+
+export interface PartialSourceDocument extends PartialStoredObject {
+  readonly json: JsonRecord;
+  readonly key: string;
+}
+
+export type ReadDocument = SourceDocument | PartialSourceDocument;
 
 export interface SourceDocument extends StoredObject {
   readonly key: string;
@@ -184,7 +213,8 @@ export interface SearchRequest {
   readonly includeBody?: boolean;
 }
 
-export interface SearchHit {
+/** Ranked index evidence whose current source validity has not yet been established. */
+export interface SearchCandidate {
   readonly type: string;
   readonly id: string;
   readonly name: string;
@@ -205,10 +235,30 @@ export interface SearchHit {
   readonly body?: string;
 }
 
+export interface CompleteSearchHit extends SearchCandidate {
+  readonly partial?: false;
+  readonly object?: never;
+  readonly identity?: never;
+  readonly issues?: never;
+}
+
+export interface PartialSearchHit extends SearchCandidate {
+  readonly partial: true;
+  readonly object: PartialStoredObject["object"];
+  readonly identity: DocumentIdentity;
+  readonly issues: readonly DocumentIssue[];
+}
+
+export type SearchHit = CompleteSearchHit | PartialSearchHit;
+
 export interface SearchResponse {
   readonly mode: SearchMode;
   readonly hits: readonly SearchHit[];
   readonly indexGeneration: number;
+}
+
+export interface SearchCandidateResponse extends Omit<SearchResponse, "hits"> {
+  readonly hits: readonly SearchCandidate[];
 }
 
 /** The largest number of hops one relation query may walk. */
@@ -282,6 +332,9 @@ export interface RelationFinding {
 }
 
 export interface RelationsResponse {
+  /** Present when recoverable source warnings prevent claiming a complete graph. */
+  readonly complete?: false;
+  readonly issues?: readonly SyncIssue[];
   readonly root: RelationNode;
   readonly mode: RelationsMode;
   readonly edges: readonly RelationEdge[];
@@ -312,7 +365,7 @@ export interface ObjectFacade {
   // The search bounds are advertised to clients, so a facade that knows them must expose them.
   readonly config?: Pick<FrameworkConfig, "mcp"> & Partial<Pick<FrameworkConfig, "search">>;
   create(type: string, object: unknown, body?: string, signal?: AbortSignal): Promise<StoredObject>;
-  get(type: string, id: string, signal?: AbortSignal): Promise<StoredObject>;
+  get(type: string, id: string, signal?: AbortSignal): Promise<ReadObject>;
   update(
     type: string,
     id: string,
@@ -331,7 +384,7 @@ export interface ObjectFacade {
     type: string,
     options?: { limit?: number; offset?: number },
     signal?: AbortSignal,
-  ): Promise<{ objects: readonly StoredObject[]; total: number }>;
+  ): Promise<{ objects: readonly ReadObject[]; total: number }>;
   search(request: SearchRequest, signal?: AbortSignal): Promise<SearchResponse>;
   relations(request: RelationsRequest, signal?: AbortSignal): Promise<RelationsResponse>;
   resync(signal?: AbortSignal): Promise<SyncReport>;

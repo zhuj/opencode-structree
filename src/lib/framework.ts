@@ -6,6 +6,7 @@ import { defineConfig, type FrameworkConfigInput } from "./config.ts";
 import { createEmbeddingProvider } from "./embeddings/index.ts";
 import { asFrameworkError, FrameworkError } from "./errors.ts";
 import { checksum, FileStore, objectKey } from "./filesystem.ts";
+import { documentLabels } from "./read-document.ts";
 import { ObjectRegistry } from "./registry.ts";
 import { buildRelationGraph, nodeKey, type RelationTraversal } from "./relation-graph.ts";
 import { affectedObjects, relationFindings, walkGraph } from "./relations.ts";
@@ -20,11 +21,14 @@ import {
   RELATIONS_DEPTH_MAX,
   RELATIONS_EDGE_LIMIT,
   RELATIONS_IMPACT_KINDS,
+  type ReadDocument,
+  type ReadObject,
   type RelationEdge,
   type RelationKind,
   type RelationNode,
   type RelationsRequest,
   type RelationsResponse,
+  type SearchHit,
   type SearchRequest,
   type SearchResponse,
   type SourceDocument,
@@ -75,13 +79,26 @@ export type CreateFrameworkOptions = FrameworkOptions &
     | { readonly definitions: readonly ObjectDefinition[]; readonly registry?: never }
   );
 
-const publicObject = (document: SourceDocument): StoredObject => ({
-  type: document.type,
-  object: document.object,
-  body: document.body,
-  path: document.path,
-  checksum: document.checksum,
-});
+function publicObject(document: SourceDocument): StoredObject;
+function publicObject(document: ReadDocument): ReadObject;
+function publicObject(document: ReadDocument): ReadObject {
+  const common = {
+    type: document.type,
+    body: document.body,
+    path: document.path,
+    checksum: document.checksum,
+  };
+  if (document.partial)
+    return {
+      ...common,
+      partial: true,
+      object: document.object,
+      raw: document.raw,
+      issues: document.issues,
+      identity: document.identity,
+    };
+  return { ...common, object: document.object };
+}
 
 function lowercaseRelations(value: unknown): unknown {
   if (typeof value === "string") return value.toLowerCase();
@@ -330,7 +347,7 @@ export class ObjectFramework implements ObjectFacade {
     );
   }
 
-  get(type: string, id: string, signal?: AbortSignal): Promise<StoredObject> {
+  get(type: string, id: string, signal?: AbortSignal): Promise<ReadObject> {
     id = id.toLowerCase();
     return this.run(async (inner) => publicObject(await this.store.get(type, id, inner)), signal);
   }
@@ -387,7 +404,7 @@ export class ObjectFramework implements ObjectFacade {
     type: string,
     options: { limit?: number; offset?: number } = {},
     signal?: AbortSignal,
-  ): Promise<{ objects: readonly StoredObject[]; total: number }> {
+  ): Promise<{ objects: readonly ReadObject[]; total: number }> {
     return this.run(async (inner) => {
       const limit = options.limit ?? LIST_LIMIT_DEFAULT;
       const offset = options.offset ?? 0;
@@ -463,8 +480,13 @@ export class ObjectFramework implements ObjectFacade {
           "SCAN",
           "The relation graph is incomplete because a directory cannot be read.",
         );
+      const recoveredPaths = new Set(
+        scan.documents.filter((document) => document.partial).map((document) => document.path),
+      );
+      const sourceConflicts = scan.issues.filter((issue) => !recoveredPaths.has(issue.path));
       const rootDocument = scan.documents.find(
-        (document) => document.type === definition.name && document.object.id === id,
+        (document) =>
+          document.type === definition.name && document.key === objectKey(definition.name, id),
       );
       if (rootDocument === undefined) {
         if (scan.conflictedKeys.includes(objectKey(definition.name, id)))
@@ -473,7 +495,7 @@ export class ObjectFramework implements ObjectFacade {
             `Multiple ${definition.name} files use id ${JSON.stringify(id)}.`,
             { type: definition.name, id },
           );
-        if (scan.issues.length > 0)
+        if (sourceConflicts.length > 0)
           throw new FrameworkError(
             "SOURCE_CONFLICT",
             "The relation graph is incomplete because one or more source files could not be read as unique valid objects.",
@@ -485,10 +507,7 @@ export class ObjectFramework implements ObjectFacade {
           { type: definition.name, id },
         );
       }
-      // Invalid or unreadable files, as well as duplicated identities, are excluded
-      // from the scan. The graph would therefore be missing a possible object, so the
-      // query is refused rather than returning a partial answer as if it were complete.
-      if (scan.issues.length > 0)
+      if (sourceConflicts.length > 0)
         throw new FrameworkError(
           "SOURCE_CONFLICT",
           "The relation graph is incomplete because one or more source files could not be read as unique valid objects.",
@@ -497,16 +516,20 @@ export class ObjectFramework implements ObjectFacade {
       const graph = buildRelationGraph(scan.documents, this.registry.definitions);
       const root: RelationNode = {
         type: rootDocument.type,
-        id: rootDocument.object.id,
-        name: rootDocument.object.name,
-        title: rootDocument.object.title,
+        ...documentLabels(rootDocument),
       };
       const walk = walkGraph(graph, root, traversal);
 
       const retired = new Set<string>();
-      for (const document of scan.documents)
-        if (document.object.retiredAt !== null)
-          retired.add(nodeKey(document.type, document.object.id));
+      for (const document of scan.documents) {
+        const timestamp = document.object.retiredAt;
+        const isRetired = document.partial
+          ? typeof timestamp === "string" &&
+            /^\d{4}-\d{2}-\d{2}T/.test(timestamp) &&
+            Number.isFinite(Date.parse(timestamp))
+          : timestamp !== null;
+        if (isRetired) retired.add(nodeKey(document.type, document.object.id));
+      }
       const typeFilter = request.types === undefined ? undefined : new Set(request.types);
       const reported = (key: string): boolean => {
         if (!includeRetired && retired.has(key)) return false;
@@ -550,6 +573,7 @@ export class ObjectFramework implements ObjectFacade {
       );
       return {
         root,
+        ...(scan.issues.length ? { complete: false as const, issues: scan.issues } : {}),
         mode,
         edges,
         affected,
@@ -598,9 +622,14 @@ export class ObjectFramework implements ObjectFacade {
               invalidate: (keys) => this.index.removeKeys(keys),
             },
           );
-          const documents: SourceDocument[] = [];
+          const documents: ReadDocument[] = [];
           const issues: SyncIssue[] = [...scan.issues];
           for (const document of scan.documents) {
+            if (document.partial) {
+              // Partial documents are not renamed or rewritten during resync.
+              documents.push(document);
+              continue;
+            }
             const basename = `${document.object.id}.md`;
             if (path.posix.basename(document.path) === basename) {
               documents.push(document);
@@ -744,12 +773,31 @@ export class ObjectFramework implements ObjectFacade {
       }
       inner.throwIfAborted();
       const response = this.index.search({ ...request, mode, topN }, vector, this.fingerprint);
-      const valid = [];
+      const valid: SearchHit[] = [];
       for (const hit of response.hits) {
         inner.throwIfAborted();
         try {
-          if (checksum(await this.store.readRaw(hit.path, inner)) === hit.checksum) valid.push(hit);
-          else this.requestResync();
+          const raw = await this.store.readRaw(hit.path, inner);
+          if (checksum(raw) !== hit.checksum) {
+            this.requestResync();
+            continue;
+          }
+          const document = this.store.parse(hit.type, hit.path, raw);
+          if (document.object.id !== hit.id) {
+            this.requestResync();
+            continue;
+          }
+          valid.push(
+            document.partial
+              ? {
+                  ...hit,
+                  partial: true,
+                  object: document.object,
+                  identity: document.identity,
+                  issues: document.issues,
+                }
+              : hit,
+          );
         } catch {
           inner.throwIfAborted();
           this.requestResync();

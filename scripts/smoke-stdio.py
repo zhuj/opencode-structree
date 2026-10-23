@@ -86,7 +86,10 @@ def run():
             assert opened["protocolVersion"] == "2025-11-25", opened
             send(process, {"jsonrpc": "2.0", "method": "notifications/initialized"})
             tools = call(process, 2, "tools/list", {})["tools"]
-            assert len(tools) == 65
+            assert len(tools) == 67
+            assert {"objects_validate", "objects_materialize"} <= {
+                tool["name"] for tool in tools
+            }
             value = {
                 "id": "stdio-test",
                 "name": "stdio-test",
@@ -136,6 +139,28 @@ def run():
             assert "verification" in hit["fulltextExcerpt"], searched
             assert len(hit["fulltextExcerpt"]) <= 1200, searched
             assert "body" not in hit and hit["matchedChunk"] is None, searched
+            validated = call(
+                process, 6, "tools/call", {"name": "objects_validate", "arguments": {}}
+            )
+            assert not validated.get("isError"), validated
+            assert validated["structuredContent"]["counts"]["complete"] == 1
+            materialized = call(
+                process,
+                7,
+                "tools/call",
+                {"name": "objects_materialize", "arguments": {}},
+            )
+            assert not materialized.get("isError"), materialized
+            assert materialized["structuredContent"]["published"] is True
+            checked = call(
+                process,
+                8,
+                "tools/call",
+                {"name": "objects_materialize", "arguments": {"check": True}},
+            )
+            assert not checked.get("isError"), checked
+            assert checked["structuredContent"]["clean"] is True
+            assert checked["structuredContent"]["published"] is False
             deleted = call(
                 process,
                 5,
@@ -198,7 +223,8 @@ def run():
             json.dumps(
                 {
                     "stdio": "passed",
-                    "tools": 65,
+                    "tools": len(tools),
+                    "materialization": "passed",
                     "crud_and_search": "passed",
                     "lexical_excerpt": "passed",
                     "relaxed_arguments": "passed",

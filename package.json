@@ -11,10 +11,21 @@
     "./sqlite": "./src/lib/sqlite/public.ts",
     "./json-repair": "./src/lib/json-repair/index.ts",
     "./embeddings": "./src/lib/embeddings/index.ts",
-    "./vault": "./src/lib/vault/index.ts"
+    "./vault": "./src/lib/vault/index.ts",
+    "./model": {
+      "types": "./dist/model/index.d.ts",
+      "import": "./dist/model/index.js"
+    },
+    "./materialization": "./src/lib/materialization/index.ts",
+    "./materialization-mcp": "./src/lib/materialization-mcp.ts"
   },
   "scripts": {
-    "build": "bun build ./src/cli.ts --target=bun --packages=external --outdir=dist",
+    "build": "bun build ./src/cli.ts --target=bun --packages=external --outdir=dist && bun run build:model",
+    "build:model": "bun build ./src/lib/model/index.ts --target=browser --outdir=dist/model && tsc -p tsconfig.model.json",
+    "validate": "bun src/cli.ts validate",
+    "materialize": "bun src/cli.ts materialize",
+    "materialize:check": "bun src/cli.ts materialize --check",
+    "example:materialization": "bun run build:model && bun examples/materialization/run.ts",
     "start": "bun src/cli.ts serve --config object-mcp.config.json",
     "typecheck": "tsc --noEmit",
     "test": "bun test",

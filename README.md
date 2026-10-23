@@ -202,10 +202,10 @@ Both registration functions inherit `objects.config.mcp`. An optional third argu
 | Method | Contract |
 | --- | --- |
 | `create(type, object, body?, signal?)` | Validate a complete object and create its Markdown file. |
-| `get(type, id, signal?)` | Read the current filesystem object, body, path, and checksum. |
+| `get(type, id, signal?)` | Read the current filesystem document, including recoverable content and diagnostics when its frontmatter is incomplete. |
 | `update(type, id, object, body, expectedChecksum, signal?)` | Replace the complete object/body, preserving ID and `createdAt`. |
 | `delete(type, id, expectedChecksum, signal?)` | Delete the source file and invalidate its derived search data. |
-| `list(type, {limit?, offset?}, signal?)` | Read valid filesystem objects in ID order; default limit 50, maximum 1,000. |
+| `list(type, {limit?, offset?}, signal?)` | Read filesystem documents in ID order, including partial documents; default limit 50, maximum 1,000. |
 | `search(request, signal?)` | Retrieve distinct objects from the synchronized index; `topN` is capped by the configured `search.maxTopN`. |
 | `resync(signal?)` | Wait for shared reconciliation and report every issue. |
 | `prepareEmbeddings(signal?)` | Explicitly call the provider's optional `prepare`; record a failure as the last error and rethrow it. Embedding library hosts decide whether to call it; framework creation does not prepare automatically. |
@@ -214,7 +214,39 @@ Both registration functions inherit `objects.config.mcp`. An optional third argu
 | `onEvent(listener)` | Subscribe to tool mutations, filesystem notifications, and completed sync reports. Returns an unsubscribe function. |
 | `close()` | Cancel pending work, drain active work, and release watcher, model, runtime, and database resources. |
 
-Facade inputs accept domain `Date` objects or the canonical JSON representation. MCP inputs/outputs and YAML dates are ISO strings. A stored response is `{type, object, body, path, checksum}`; a list response with `includeBody: false` omits the `body` field.
+Facade inputs accept domain `Date` objects or the canonical JSON representation. MCP inputs/outputs and YAML dates are ISO strings. A validated stored response is `{type, object, body, path, checksum}`. Get/list return `ReadObject`, a union of validated and partial results; narrow with `if (document.partial)` before using complete schema fields. A list response with `includeBody: false` omits `body` and, for partial results, `raw` as well.
+
+### Reading incomplete documents
+
+Existing Markdown does not need to satisfy a complete object schema to be read or
+indexed. Missing frontmatter, malformed YAML, and missing required fields produce
+a partial result with recoverable metadata, content, and validation diagnostics
+rather than hiding the whole document. The registered directory determines type;
+a usable frontmatter `id` takes precedence, otherwise the filename stem supplies
+an explicitly inferred read/search identity. That identity is not written back to
+the file, and missing dates, relations, and other domain fields are not invented.
+
+Readable partial text is eligible for full-text and configured semantic indexing.
+Get/list results distinguish partial documents from validated objects; use the
+content and diagnostics to inspect them rather than treating inferred metadata
+as a valid object. A missing or unterminated frontmatter block does not discard
+the readable source. Scanning and resync do not repair or rename partial files.
+
+A partial get result is `{partial: true, type, object, body, path, checksum,
+raw, identity, issues}`. `object` contains recovered JSON-compatible fields plus
+the resolved `id`; `identity` is `{source: "frontmatter" | "filename", id, type}`;
+each issue is `{code, message}`. Partial fields are not decoded domain values:
+for example, a recovered date stays a string, not a fabricated `Date`. Partial
+search hits include `partial`, `object`, `identity`, and `issues`, but no dedicated
+`raw` field; their name/title fallbacks are derived display labels.
+
+Create and update still require complete, schema-valid objects. Tolerant reading
+does not waive checksum conflicts, duplicate-identity ambiguity, bounded file
+size, UTF-8 validation, filesystem confinement, or real I/O failures. Reads do
+not rewrite the source or change its ownership or permissions.
+
+Update/delete of a partial source returns `SOURCE_CONFLICT`, even when it has an
+explicit id and a current checksum. Repair its source explicitly before mutation.
 
 ## The 12 schemas and their tools
 
@@ -290,9 +322,11 @@ them, the response also reports the link defects: `DANGLING_TARGET`,
 not drop the link, so the blast radius stays complete, but it is reported
 because the object does not mean what the field declares. A target that names
 no object is not an object, so it is not in the answer set, while its edge and
-its finding still report the broken link. Invalid, unreadable or duplicated
-source objects are excluded from the graph, so the query is refused with
-`SOURCE_CONFLICT` rather than answering partially.
+its finding still report the broken link. Readable partial sources participate
+using only safely recovered, descriptor-shaped relation values. Their warnings
+are returned as `issues` with `complete: false`; missing fields do not imply a
+complete graph. Unreadable, conflicting or duplicated sources still prevent a
+reliable graph, so the query is refused rather than returning a misleading answer.
 
 The [proposal](docs/impact-analysis-proposal.md) records the design, the
 traversal semantics and the verified behaviour.
@@ -335,11 +369,11 @@ Long-form content belongs here.
 
 All timestamps are caller-supplied. An update is a full replacement, including its body; it is not a deep partial patch. The framework keeps `id` and `createdAt` immutable and requires the current checksum on update/delete. Set `retiredAt` explicitly when retirement is desired; delete performs an actual file deletion. A retired object remains listed and searchable; callers exclude it by checking `retiredAt`. This publishes existing listing and search behavior, not a behavior change.
 
-The file name is the id: a created object is stored at `<type directory>/<id>.md`. During reconciliation, the scanner renames a discovered file whose base name is not `<id>.md`, in its existing directory, and updates the indexed path. File content is the source of truth, so a hand-renamed file is renamed back to match its id. Subdirectories remain supported because only the base name is corrected. A filesystem that folds case or normalizes names may spell the name differently while the target still names the same file. The scanner accepts that spelling, leaves the file unchanged and indexed at its actual path, and reports no issue. A rename never overwrites: only a different file holding the target name is a conflict, excluding the object with `RENAME_CONFLICT` and leaving both files unchanged. A resync can therefore rename files and is not read-only. Changing an object's `name` does not rename its file. See [decision 0013](docs/decisions/0013-name-the-file-after-the-id.md).
+For validated objects, the file name is the id: a created object is stored at `<type directory>/<id>.md`. During reconciliation, the scanner renames a validated file whose base name is not `<id>.md`, in its existing directory, and updates the indexed path. File content is the source of truth, so a hand-renamed validated file is renamed back to match its id. Partial documents are never automatically renamed. Subdirectories remain supported because only the base name is corrected. A filesystem that folds case or normalizes names may spell the name differently while the target still names the same file. The scanner accepts that spelling, leaves the file unchanged and indexed at its actual path, and reports no issue. A rename never overwrites: only a different file holding the target name is a conflict, excluding the object with `RENAME_CONFLICT` and leaving both files unchanged. A resync can therefore rename validated files and is not read-only. Changing an object's `name` does not rename its file. See [decision 0013](docs/decisions/0013-name-the-file-after-the-id.md).
 
 Creating a new ID requires its type directory to have no invalid or conflicting source files, so the store can establish that the identity is unused. Existing valid objects can still be read, updated, or deleted while other files are being repaired.
 
-YAML is parsed as version 1.2 with duplicate keys rejected and bounded alias expansion. Unknown object fields and non-JSON metadata values are rejected at the persistence boundary rather than silently discarded. The domain `metadata` schema remains `Record<string, any>`; storage cannot represent functions, cyclic values, class instances, `undefined`, or nonfinite numbers faithfully. All required domain fields remain present.
+YAML is parsed as version 1.2 with duplicate-key diagnostics and bounded alias expansion. Strict writes reject unknown object fields and non-JSON metadata values rather than silently discarding them. Tolerant reads omit ambiguous or unsafe recovered values and report issues. The domain `metadata` schema remains `Record<string, any>`; storage cannot represent functions, cyclic values, class instances, `undefined`, or nonfinite numbers faithfully. All required domain fields must be present on writes and validated objects, but not on partial reads.
 
 Writes publish a complete temporary file in the same directory, synchronize it, and replace/publish the destination atomically. Full replacement rewrites frontmatter formatting and comments. Files must be UTF-8; the checksum covers the entire decoded source, preserving valid original bytes including a BOM and line endings. Symlinked object files/directories are rejected or excluded. Hidden files/directories are excluded from discovery.
 
@@ -375,13 +409,13 @@ The tool's exact query, type-filter and mode descriptions are:
 
 The search tool itself states:
 
-> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
+> Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking, including readable partial documents. Missing or malformed frontmatter does not by itself exclude a document; partial hits expose recovered fields, identity origin and issues. Display label fallbacks are derived, not validated source facts. Search is not exhaustive: topN is a maximum, recent objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate readable objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true; search never returns a dedicated raw field. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.
 
 Identical extracted strings are deduplicated before folding; case variants can count separately against the 128-token limit. Overflow currently surfaces as `INTERNAL`, not `VALIDATION`. Two words can match anywhere, not necessarily as a phrase. `reconcil*` searches the token `reconcil`, and `cafe` matches `café`. Hybrid still invokes its provider before lexical evaluation. A provider failure keeps the `EMBEDDINGS_UNAVAILABLE` code and its cause, and its message ends with `Search with mode "fulltext" to query without embeddings.` Embedding failures during indexing leave full-text search available and mark affected objects pending. A configured provider or a snapshot's presence does not guarantee lazy model loading succeeds.
 
 The 128-token cap bounds the generated FTS5 MATCH expression; it is self-imposed, not a SQLite limit, and fails rather than truncates. Shorten an over-limit query yourself. On 2026-10-21 SQLite 3.53.4 executed 2000 AND-joined and 5000 OR-joined terms without error. See [decision 0011](docs/decisions/0011-publish-the-observed-surface-and-reject-empty-identifiers.md). Hybrid hits from a query with no lexical tokens have `fulltextRank: null` and a set `semanticDistance`.
 
-The `types` parameter is published as an enum of the registered type names, so an unknown name is rejected by input validation with the full list in the message, before the call reaches the framework. A name that reaches the framework anyway fails with the `UNKNOWN_TYPE` code and carries `registeredTypes`, the sorted registered type names, in its error details. Multiple chunks never consume multiple positions in the final object result. Only a complete successful paginated source listing can support an absence claim about valid objects; search revalidation is not a guarantee against subsequent edits.
+The `types` parameter is published as an enum of the registered type names, so an unknown name is rejected by input validation with the full list in the message, before the call reaches the framework. A name that reaches the framework anyway fails with the `UNKNOWN_TYPE` code and carries `registeredTypes`, the sorted registered type names, in its error details. Multiple chunks never consume multiple positions in the final object result. Only a complete successful paginated source listing can support an absence claim about readable, uniquely identified objects; search revalidation is not a guarantee against subsequent edits.
 
 Results include type, ID, name/title, source path/checksum, score, full-text rank, semantic distance, and nullable semantic `matchedChunk`. Fulltext hits have no semantic chunk. `includeBody` adds the full body. Semantic chunk text is capped by `search.maxMatchCharacters`; its `[start,end)` offsets refer to the raw source file in Unicode code points. A score is a ranking value, not a probability. Hybrid fusion examines `topN * candidateMultiplier` candidates per method, so increasing this setting can change the fused result order.
 
@@ -441,7 +475,7 @@ Important boundaries:
 - Files and SQLite do not share an atomic transaction. A crash after a filesystem commit can leave search pending; the next rescan repairs derived state. A failure to update the cache after a successful file mutation is reported through status/error hooks without pretending the source write failed.
 - External editors do not acquire the framework's coordination lock. Checksums detect ordinary stale edits, but an uncooperative editor can still race the final check and rename/unlink. This is optimistic concurrency, not a universal filesystem compare-and-swap primitive.
 - Instances sharing a SQLite cache must use the same source root, registry snapshot, and compatible index configuration. Give different sources/registries their own cache paths. A registry change requires restarting instances together.
-- Indexing is eventually consistent. Watch notifications are hints, and pending/invalid objects may be absent from search. Invalid source files are preserved and reported; duplicate identities are excluded together. An incomplete directory scan does not mass-delete unseen cache rows.
+- Indexing is eventually consistent. Watch notifications are hints, and pending or unreadable documents may be absent from search. Readable files with incomplete frontmatter are indexed as partial documents without rewriting them; duplicate identities are excluded together. An incomplete directory scan does not mass-delete unseen cache rows.
 - Semantic distance evaluation is an exact scan of eligible vectors. This implementation does not promise approximate-nearest-neighbor indexing or corpus-scale latency. Tune chunk size and candidate count based on the actual workload.
 - ONNX cancellation is cooperative. An active native inference call completes before disposal; cancellation prevents subsequent batches and discards the cancelled result. Resync is shared work: cancelling one waiter leaves other waiters' indexing alive.
 

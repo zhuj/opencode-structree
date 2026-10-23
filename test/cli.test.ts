@@ -315,15 +315,14 @@ describe("vault frontmatter diagnostics", () => {
       decode: (value: unknown) => value as Record<string, unknown>,
       encode: (value: Record<string, unknown>) => value,
     });
-    let message = "";
-    try {
-      codec.parse(`---\nid: demo\nsecret_value: ${syntheticSecret}\n\tbad: tab-indented\n---\n`);
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
-    }
-    expect(message).not.toBe("");
+    const raw = `---\nid: demo\nsecret_value: ${syntheticSecret}\n\tbad: tab-indented\n---\n`;
+    const document = codec.parse(raw);
+    expect(document.partial).toBe(true);
+    if (!document.partial) throw new Error("Expected readable partial frontmatter.");
+    expect(document.raw).toBe(raw);
+    const message = document.issues.map((issue) => issue.message).join("\n");
     expect(message).not.toContain(syntheticSecret);
-    expect(message).toContain("Tabs are not allowed as indentation");
+    expect(message).toContain("TAB_AS_INDENT");
     expect(message).toContain("line 3");
     expect(message).toContain("column 1");
   });
@@ -333,16 +332,14 @@ describe("vault frontmatter diagnostics", () => {
       decode: (value: unknown) => value as Record<string, unknown>,
       encode: (value: Record<string, unknown>) => value,
     });
-    let message = "";
-    try {
-      codec.parse("---\nslug: alpha\nslug: beta\n---\n");
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
-    }
-    expect(message).not.toBe("");
+    const document = codec.parse("---\nslug: alpha\nslug: beta\n---\n");
+    expect(document.partial).toBe(true);
+    if (!document.partial) throw new Error("Expected readable partial frontmatter.");
+    expect(document.json.slug).toBeUndefined();
+    const message = document.issues.map((issue) => issue.message).join("\n");
     expect(message).not.toContain("alpha");
     expect(message).not.toContain("beta");
-    expect(message).toContain("Map keys must be unique");
+    expect(message).toContain("DUPLICATE_KEY");
     expect(message).toContain("line 2");
   });
 });

@@ -3,6 +3,8 @@ export {
   type HeaderCodec,
   MarkdownCodec,
   type MarkdownCodecOptions,
+  type PartialVaultElement,
+  type ReadVaultElement,
   type VaultElement,
 } from "./codec.ts";
 export {
@@ -14,6 +16,7 @@ export {
   type WriteExpectation,
 } from "./confined-filesystem.ts";
 export { OwnedStage } from "./owned-stage.ts";
+export type { DocumentIssue, JsonRecord, JsonValue } from "./read-data.ts";
 export {
   ReconciliationIdentityError,
   type ReconciliationResult,
@@ -22,7 +25,7 @@ export {
   reconcileSnapshot,
 } from "./reconciliation.ts";
 export { assertUtf8Text } from "./utf8.ts";
-export { Vault, type VaultDocument, type VaultScan } from "./vault.ts";
+export { type ValidVaultDocument, Vault, type VaultDocument, type VaultScan } from "./vault.ts";
 export {
   WatchLifecycle,
   type WatchLifecycleOptions,

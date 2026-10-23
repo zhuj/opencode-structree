@@ -1,10 +1,9 @@
 import { FrameworkError } from "../errors.ts";
-import type { MarkdownCodec, VaultElement } from "./codec.ts";
+import type { MarkdownCodec, ReadVaultElement, VaultElement } from "./codec.ts";
 import type { ConfinedFilesystem, VaultIssue, WriteExpectation } from "./confined-filesystem.ts";
 
-export interface VaultDocument<Header> extends VaultElement<Header> {
-  readonly path: string;
-}
+export type VaultDocument<Header> = ReadVaultElement<Header> & { readonly path: string };
+export type ValidVaultDocument<Header> = VaultElement<Header> & { readonly path: string };
 
 export interface VaultScan<Header> {
   readonly documents: readonly VaultDocument<Header>[];
@@ -38,7 +37,7 @@ export class Vault<Header> {
     body: string,
     expectation: WriteExpectation,
     signal?: AbortSignal,
-  ): Promise<VaultDocument<Header>> {
+  ): Promise<ValidVaultDocument<Header>> {
     const element = this.codec.serialize(value, body);
     await this.files.write(relative, element.raw, expectation, signal);
     return { path: relative, ...element };
@@ -49,7 +48,7 @@ export class Vault<Header> {
     value: unknown,
     body = "",
     signal?: AbortSignal,
-  ): Promise<VaultDocument<Header>> {
+  ): Promise<ValidVaultDocument<Header>> {
     return this.write(relative, value, body, { expectedChecksum: null }, signal);
   }
 
@@ -59,7 +58,7 @@ export class Vault<Header> {
     body: string,
     expectedChecksum: string,
     signal?: AbortSignal,
-  ): Promise<VaultDocument<Header>> {
+  ): Promise<ValidVaultDocument<Header>> {
     return this.write(relative, value, body, { expectedChecksum }, signal);
   }
 
@@ -74,7 +73,10 @@ export class Vault<Header> {
     for (const file of scanned.files) {
       signal?.throwIfAborted();
       try {
-        documents.push(this.parse(file.path, file.raw));
+        const document = this.parse(file.path, file.raw);
+        documents.push(document);
+        if (document.partial)
+          issues.push(...document.issues.map((issue) => ({ path: file.path, ...issue })));
       } catch (error) {
         issues.push({
           path: file.path,
@@ -83,6 +85,11 @@ export class Vault<Header> {
         });
       }
     }
-    return { documents, issues, complete: scanned.complete, scanned: scanned.scanned };
+    return {
+      documents,
+      issues,
+      complete: scanned.complete,
+      scanned: scanned.scanned,
+    };
   }
 }

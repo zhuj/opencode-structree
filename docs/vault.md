@@ -1,8 +1,10 @@
 # Vault and storage abstractions
 
-The vault owns a directory of Markdown documents. Each document has a typed
+The vault owns a directory of Markdown documents. Validated documents have a typed
 YAML header, an exact Markdown body, a logical relative path, and a checksum of
-the complete source. A caller supplies the header codec. Object registrations,
+the complete source. Readable documents with missing, broken, or incomplete
+frontmatter remain available as partial content with diagnostics. A caller supplies
+the header codec. Object registrations,
 relationships, SQL tables, MCP transports, and embedding providers are composed
 above this layer.
 
@@ -58,12 +60,16 @@ try {
     "# Import guide\n\nKeep this trailing whitespace.  \n",
   );
   const current = await vault.read(created.path);
-  await vault.update(
-    current.path,
-    { ...current.header, labels: ["guide", "reviewed"] },
-    current.body,
-    current.checksum,
-  );
+  if (current.partial) {
+    console.log(current.raw, current.issues);
+  } else {
+    await vault.update(
+      current.path,
+      { ...current.header, labels: ["guide", "reviewed"] },
+      current.body,
+      current.checksum,
+    );
+  }
 } finally {
   await files.close();
 }
@@ -92,10 +98,17 @@ decoded domain values, or both. FileStore's registry codec accepts both.
 | `close()` | Stops new operations and waits for retained file/stage operations before closing the root. Idempotent and asynchronous. |
 | `new MarkdownCodec(headerCodec, options)` | Converts between YAML/Markdown and typed headers, with configurable byte and alias limits. |
 | `new Vault(files, codec)` | A typed document view over shared filesystem ownership. |
-| `Vault.read/create/update/delete/scan` | Typed document operations; `write` accepts an explicit expectation. `parse` decodes an already-read source. |
+| `Vault.read/parse/scan` | Return discriminated validated/partial documents; parsing problems are nonfatal diagnostics, not omitted source files. |
+| `Vault.create/update/write` | Validate the complete header before publication; `write` accepts an explicit expectation. |
+| `Vault.delete` | Delete the explicit relative path under the supplied checksum guard. Object-facade mutation policy is enforced above this generic layer. |
 
-`VaultDocument<Header>` contains `header`, `body`, `raw`, `json`, `path`, and
-`checksum`. Multiple vault views may share one `ConfinedFilesystem`, for example
+`VaultDocument<Header>` is a validated/partial union. Both branches contain
+`header`, `body`, `raw`, `json`, `path`, and `checksum`. The validated branch
+has the decoded `Header`; a partial branch has `partial: true`, `header: null`,
+JSON-compatible recovered `json`, and structured `issues`. Narrow on `partial`
+before using `header`. `ValidVaultDocument<Header>` names the validated shape
+returned by strict serialization and publication. Multiple vault views may share
+one `ConfinedFilesystem`, for example
 one view per registered object schema. The outer owner closes the shared files
 once all views and asynchronous work have finished.
 
@@ -112,6 +125,23 @@ Traversal, absolute paths, empty components, backslashes, NULs, Windows drive
 forms, and malformed UTF-16 are rejected. Scans include `.md` case-insensitively
 and exclude hidden names, including staging files. Filename extensions are
 explicit; the API does not append `.md` silently.
+
+### Read-contract amendment, 2026-10-23
+
+Tolerant reads amend the earlier strict-discovery assumptions in
+[decision 0001](decisions/0001-filesystem-commit-and-reconciliation.md) and the
+validated-only scope of filename alignment in
+[decision 0013](decisions/0013-name-the-file-after-the-id.md). Those records remain
+historical evidence, not instructions to omit or rename partial documents.
+Deferred startup and reconciliation scheduling from
+[decision 0015](decisions/0015-defer-the-startup-reconciliation.md) are unchanged.
+The [facade contract](library.md#partial-reads-strict-writes) defines inferred
+identity, recovered metadata, mutation refusal, and qualified relation answers.
+
+Parser/schema warnings alone do not make filesystem discovery incomplete or
+prevent readable documents from reaching the index. Genuine I/O failures and
+duplicate identities still retain their conflict/completeness semantics. This
+amendment does not loosen strict writes or authorize automatic source repair.
 
 ## Publication and filesystem limits
 
@@ -168,6 +198,7 @@ const lock = await SqliteProcessLock.open({
 try {
   await lock.run(async () => {
     const current = await vault.read("guides/import.md");
+    if (current.partial) throw new Error("Repair the partial header before this update.");
     return vault.update(
       current.path,
       { ...current.header, enabled: false },
@@ -189,7 +220,12 @@ accepted callbacks. The lock is not reentrant: a callback must not await another
 `run` on the same instance. The `bun` driver is also supported.
 
 The Markdown codec preserves body whitespace and hashes BOM/line-ending bytes
-as supplied. It rejects duplicate YAML keys and bounds alias expansion. Invalid
+as supplied. Tolerant reads report malformed frontmatter, duplicate YAML keys,
+and header validation problems without suppressing the readable document; they
+do not treat recovered values as a validated header. Missing frontmatter leaves
+the complete Markdown available as content. Unterminated frontmatter preserves
+the original source rather than discarding the apparent header. Alias expansion
+remains bounded. Invalid
 UTF-8 files remain unchanged and are reported by scans. Raw strings/bodies with
 unpaired UTF-16 surrogates are rejected before writing because UTF-8 cannot
 represent them faithfully. YAML-escaped header strings can preserve those
@@ -216,8 +252,10 @@ cleanup failures.
 `reconcileSnapshot` preflights duplicate keys before invoking an upsert callback.
 It removes missing derived rows only when `complete` is true, and only after all
 upserts return successfully. The caller owns the transaction or coordination
-boundary. In this framework FileStore excludes invalid and duplicate objects,
-and reconciliation applies valid metadata under its source coordination lock.
+boundary. In this framework FileStore retains readable partial documents and
+excludes duplicate object identities; reconciliation applies recoverable metadata
+and text under its source coordination lock. Partial files are never automatically
+repaired or renamed, and their inferred filename identities are not persisted.
 A partial directory enumeration cannot establish absence for unseen objects.
 
 A confirmed conflict and an unobserved object are different cases. When the

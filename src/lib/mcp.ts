@@ -10,7 +10,7 @@ import {
   type McpInputRepairConfig,
   type ObjectFacade,
   RELATIONS_DEPTH_MAX,
-  type StoredObject,
+  type ReadObject,
 } from "./types";
 
 export { effectMcpSchema } from "./mcp-input.ts";
@@ -130,31 +130,53 @@ function buildInputSchemas(search: EffectiveSearch, typeNames: readonly string[]
     }),
   };
 }
+const DocumentIssueSchema = Schema.Struct({ code: Schema.String, message: Schema.String });
+const DocumentIdentitySchema = Schema.Struct({
+  source: Schema.Literals(["filename", "frontmatter"]),
+  id: Schema.String,
+  type: Schema.String,
+});
+const PartialReadFields = {
+  partial: Schema.Literal(true),
+  object: Schema.JsonObject,
+  identity: DocumentIdentitySchema,
+  issues: Schema.Array(DocumentIssueSchema),
+};
+const SearchHitFields = {
+  type: Schema.String,
+  id: Schema.String,
+  name: Schema.String,
+  title: Schema.String,
+  path: Schema.String,
+  checksum: Schema.String,
+  score: Schema.Number,
+  fulltextRank: Schema.NullOr(Schema.Number),
+  fulltextExcerpt: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  semanticDistance: Schema.NullOr(Schema.Number),
+  matchedChunk: Schema.NullOr(
+    Schema.Struct({
+      index: NonnegativeInt,
+      start: NonnegativeInt,
+      end: NonnegativeInt,
+      text: Schema.String,
+    }),
+  ),
+  body: Schema.optionalKey(Schema.String),
+};
 const SearchOutput = effectMcpSchema(
   Schema.Struct({
     mode: Schema.Literals(["fulltext", "semantic", "hybrid"]),
     hits: Schema.Array(
-      Schema.Struct({
-        type: Schema.String,
-        id: Schema.String,
-        name: Schema.String,
-        title: Schema.String,
-        path: Schema.String,
-        checksum: Schema.String,
-        score: Schema.Number,
-        fulltextRank: Schema.NullOr(Schema.Number),
-        fulltextExcerpt: Schema.optionalKey(Schema.NullOr(Schema.String)),
-        semanticDistance: Schema.NullOr(Schema.Number),
-        matchedChunk: Schema.NullOr(
-          Schema.Struct({
-            index: NonnegativeInt,
-            start: NonnegativeInt,
-            end: NonnegativeInt,
-            text: Schema.String,
-          }),
-        ),
-        body: Schema.optionalKey(Schema.String),
-      }),
+      Schema.Union([
+        Schema.Struct({
+          ...SearchHitFields,
+          partial: Schema.optionalKey(Schema.Literal(false)),
+          object: Schema.optionalKey(Schema.Never),
+          identity: Schema.optionalKey(Schema.Never),
+          issues: Schema.optionalKey(Schema.Never),
+        }),
+        Schema.Struct({ ...SearchHitFields, ...PartialReadFields }),
+      ]),
     ),
     indexGeneration: NonnegativeInt,
   }),
@@ -221,6 +243,10 @@ const RelationsOutput = effectMcpSchema(
     truncated: Schema.Boolean,
     findingsTotal: NonnegativeInt,
     findingsTruncated: Schema.Boolean,
+    complete: Schema.optionalKey(Schema.Literal(false)),
+    issues: Schema.optionalKey(
+      Schema.Array(Schema.Struct({ path: Schema.String, ...DocumentIssueSchema.fields })),
+    ),
   }),
 );
 const DefinitionsInput = Schema.Struct({
@@ -230,9 +256,10 @@ const DefinitionsInput = Schema.Struct({
 });
 /** The workflow every type shares, published once so each tool can point at it. */
 const DEFINITION_GUIDANCE = [
-  "Object ids are stable, unique within their type, and are the only handle: the file name is the id, an id is always lowercase, and the scanner renames a file whose name does not match its id.",
+  "Object ids are stable and unique within their type. Reads prefer a usable frontmatter id; otherwise a lowercase filename stem supplies an explicitly inferred identity. The scanner may align filenames only for validated objects, never for partial documents.",
+  "Readable Markdown with missing, malformed or schema-incomplete frontmatter is returned as partial with recovered object fields, identity origin and issues; no dates, relations or other required domain fields are invented. Direct partial get includes the original raw text; includeBody:false listings omit both body and raw. Partial documents participate in search after reconciliation and are never automatically repaired or renamed.",
   "Use the type's get tool for a known id; do not list a whole type to find one object.",
-  "Update and delete replace the whole revision and require the checksum returned by the latest get, list, create or update.",
+  "Update and delete require a validated source revision and its latest checksum. Partial sources must be repaired explicitly before mutation; create/update inputs remain complete and schema-validated.",
   "Timestamps are supplied by the caller; the id and createdAt are immutable.",
   "Relation targets are not validated: a link to an object that does not exist is stored as written.",
   "The description field is a one-line summary; the body is the Markdown content.",
@@ -340,13 +367,27 @@ export function registerObjectTools(
     effectiveSearch,
     registry.definitions.map((definition) => definition.name),
   );
-  const encodeStored = (stored: StoredObject, includeBody = true): Record<string, unknown> => ({
-    type: stored.type,
-    object: registry.encode(stored.type, stored.object),
-    ...(includeBody ? { body: stored.body } : {}),
-    path: stored.path,
-    checksum: stored.checksum,
-  });
+  const encodeStored = (stored: ReadObject, includeBody = true): Record<string, unknown> => {
+    if (stored.partial) {
+      return {
+        partial: true,
+        type: stored.type,
+        object: stored.object,
+        ...(includeBody ? { body: stored.body, raw: stored.raw } : {}),
+        path: stored.path,
+        checksum: stored.checksum,
+        issues: stored.issues,
+        identity: stored.identity,
+      };
+    }
+    return {
+      type: stored.type,
+      object: registry.encode(stored.type, stored.object),
+      ...(includeBody ? { body: stored.body } : {}),
+      path: stored.path,
+      checksum: stored.checksum,
+    };
+  };
 
   for (const definition of registry.definitions) {
     const storedSchema = Schema.Struct({
@@ -357,6 +398,13 @@ export function registerObjectTools(
       checksum: Schema.String,
     });
     const storedOutput = effectMcpSchema(storedSchema);
+    const partialSchema = Schema.Struct({
+      ...storedSchema.fields,
+      ...PartialReadFields,
+      body: Schema.String,
+      raw: Schema.String,
+    });
+    const readOutput = effectMcpSchema(Schema.Union([storedSchema, partialSchema]));
     server.registerTool(
       `${definition.name}_create`,
       {
@@ -389,9 +437,9 @@ export function registerObjectTools(
     server.registerTool(
       `${definition.name}_get`,
       {
-        description: `Read one ${definition.name} directly from its Markdown file and return its checksum. ${WORKFLOW_CLAUSE}`,
+        description: `Read one ${definition.name} directly from its Markdown file and return its checksum. Partial or recoverable documents (missing, broken or incomplete frontmatter) are included when readable; identity uses the registered directory and, if needed, the filename stem as an explicitly inferred fallback. No automatic source repair or rename occurs. ${WORKFLOW_CLAUSE}`,
         inputSchema: input.schema(IdInput),
-        outputSchema: storedOutput,
+        outputSchema: readOutput,
         annotations: readOnly,
       },
       (args, ctx) =>
@@ -471,16 +519,23 @@ export function registerObjectTools(
     server.registerTool(
       `${definition.name}_list`,
       {
-        description: `List ${definition.name} objects read from the filesystem, in identifier order. A retired object is still listed; check its retiredAt field to exclude it. Set includeBody to false to omit the Markdown body and return only identity, title, path and checksum. ${WORKFLOW_CLAUSE}`,
+        description: `List ${definition.name} objects read from the filesystem, in identifier order. Partial or recoverable documents are included when readable; identity uses the registered directory and, if needed, the filename stem as an explicitly inferred fallback. Set includeBody to false to omit the Markdown body; reduced listings also omit partial raw content, which remains available on direct get. A retired object is still listed; check its retiredAt field to exclude it. No automatic repair or rename of partial files occurs during listing or resync. ${WORKFLOW_CLAUSE}`,
         inputSchema: input.schema(listInput),
         outputSchema: effectMcpSchema(
           Schema.Struct({
             // The list output is the stored shape without the body, so the two cannot drift apart.
             objects: Schema.Array(
-              Schema.Struct({
-                ...storedSchema.fields,
-                body: Schema.optionalKey(Schema.String),
-              }),
+              Schema.Union([
+                Schema.Struct({
+                  ...storedSchema.fields,
+                  body: Schema.optionalKey(Schema.String),
+                }),
+                Schema.Struct({
+                  ...partialSchema.fields,
+                  body: Schema.optionalKey(Schema.String),
+                  raw: Schema.optionalKey(Schema.String),
+                }),
+              ]),
             ),
             total: NonnegativeInt,
           }),
@@ -503,7 +558,7 @@ export function registerObjectTools(
     "objects_search",
     {
       description:
-        "Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking. Search is not exhaustive: topN is a maximum, recent or invalid objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate valid objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.",
+        "Search distinct objects in the derived SQLite index using full-text, semantic or hybrid ranking, including readable partial documents. Missing or malformed frontmatter does not by itself exclude a document; partial hits expose recovered fields, identity origin and issues. Display label fallbacks are derived, not validated source facts. Search is not exhaustive: topN is a maximum, recent objects may be absent, and stale or unreadable candidates are omitted without refill. Use the type's get tool for a known id and fully paginate its source-backed list to enumerate readable objects. The server's startup reconciliation runs in the background, so a search issued right after it starts may find nothing; objects_status reports whether a synchronization is still running. The body field is omitted unless includeBody is true; search never returns a dedicated raw field. `fulltextExcerpt` can disclose name/title text or raw YAML frontmatter and Markdown body content, including a complete short document, even when `includeBody` is omitted or false; its size limit is not redaction.",
       inputSchema: input.schema(searchInput),
       outputSchema: SearchOutput,
       annotations: readOnly,
@@ -516,7 +571,7 @@ export function registerObjectTools(
     "objects_relations",
     {
       description:
-        "Read the relation graph around one object: what a change reaches, and what justifies a change. Use it for 'what breaks if I changed this decision' and 'which decisions should I review if that scenario is changed'. The graph is read from the Markdown sources, so the answer reflects the vault on disk. The mode 'neighbors' returns relation edges up to the requested depth; 'outgoing' follows each stored edge from source to target, 'incoming' follows it from target to source, and 'both' follows either. An edge is reported with the direction of the walk that first reached it, so the label remains stable at every depth. The mode 'impact' returns the objects a change to the root reaches, following the relation kind: a change to the target of a depends, justifies, contains or owns relation propagates to the holder, and a change to the holder of a uses relation propagates to the target. The impact mode derives its direction from the kind and rejects the direction argument. The edgeKinds filter defaults to depends, uses and justifies in the impact mode, because contains and owns are organizational and relates carries no impact. The findings array reports the link defects the model does not prevent: DANGLING_TARGET, TARGET_TYPE_MISMATCH, AMBIGUOUS_TARGET and CYCLE. A finding is reported only when the defect lies within the queried depth. A target that names no object is not an object, so it is not in the affected set, while its edge and its finding still report the broken link. Invalid, unreadable or duplicated source objects are excluded from the graph, so the query is refused with SOURCE_CONFLICT rather than answering partially.",
+        "Read the relation graph around one object: what a change reaches, and what justifies a change. Use it for 'what breaks if I changed this decision' and 'which decisions should I review if that scenario is changed'. The graph is read from the Markdown sources, so the answer reflects the vault on disk. The mode 'neighbors' returns relation edges up to the requested depth; 'outgoing' follows each stored edge from source to target, 'incoming' follows it from target to source, and 'both' follows either. An edge is reported with the direction of the walk that first reached it, so the label remains stable at every depth. The mode 'impact' returns the objects a change to the root reaches, following the relation kind: a change to the target of a depends, justifies, contains or owns relation propagates to the holder, and a change to the holder of a uses relation propagates to the target. The impact mode derives its direction from the kind and rejects the direction argument. The edgeKinds filter defaults to depends, uses and justifies in the impact mode, because contains and owns are organizational and relates carries no impact. The findings array reports the link defects the model does not prevent: DANGLING_TARGET, TARGET_TYPE_MISMATCH, AMBIGUOUS_TARGET and CYCLE. A finding is reported only when the defect lies within the queried depth. A target that names no object is not an object, so it is not in the affected set, while its edge and its finding still report the broken link. Readable partial sources contribute only safely recovered, descriptor-shaped relation fields; their warnings are returned in issues with complete:false rather than claiming a complete graph. Unreadable or duplicated source objects still refuse the query with SCAN, DUPLICATE_ID or SOURCE_CONFLICT.",
       inputSchema: input.schema(relationsInput),
       outputSchema: RelationsOutput,
       annotations: readOnly,
