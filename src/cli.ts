@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { StdioServerTransport, serveStdio } from "@modelcontextprotocol/server/stdio";
 import { createFramework } from "./framework.ts";
+import { GRAPH_COMMAND_USAGE, isGraphCommand, runGraphCommand } from "./graph-tools-cli.ts";
 import { loadConfig, loadDefaultConfig } from "./lib/config.ts";
 import { parseCommandOptions, runMaterializationCommand } from "./materialization-cli.ts";
 import { createMaterializationServer } from "./materialization-server.ts";
@@ -12,6 +13,11 @@ async function main(): Promise<void> {
     process.stdout.write(
       "Usage: bun src/cli.ts <serve|sync|status> [--config <file>]\n       bun src/cli.ts <validate|materialize> [--config <file>] [--check] [--out <path>]\n\nserve: MCP over stdio\nsync: reconcile files, report errors, exit\nstatus: startup reconciliation and current index status\nvalidate: read-only source validation\nmaterialize: generate data-only artifacts [--check] [--out <path>]\n\nWithout --config the built-in defaults apply. The optional .local/.structree/config.yaml is read from the working directory when it exists. Materialized output defaults to .local/.structree/materialized under the working directory. --check reports drift without writing.\n",
     );
+    process.stdout.write(`${GRAPH_COMMAND_USAGE}\n`);
+    return;
+  }
+  if (isGraphCommand(command)) {
+    process.exitCode = await runGraphCommand(command, args.slice(1));
     return;
   }
   if (!["serve", "sync", "status", "validate", "materialize"].includes(command))

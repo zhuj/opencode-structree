@@ -17,7 +17,9 @@
       "import": "./dist/model/index.js"
     },
     "./materialization": "./src/lib/materialization/index.ts",
-    "./materialization-mcp": "./src/lib/materialization-mcp.ts"
+    "./materialization-mcp": "./src/lib/materialization-mcp.ts",
+    "./graph-tools": "./src/lib/graph-tools/index.ts",
+    "./graph-diff": "./src/lib/graph-diff/index.ts"
   },
   "scripts": {
     "build": "bun build ./src/cli.ts --target=bun --packages=external --outdir=dist && bun run build:model",
@@ -25,6 +27,8 @@
     "validate": "bun src/cli.ts validate",
     "materialize": "bun src/cli.ts materialize",
     "materialize:check": "bun src/cli.ts materialize --check",
+    "gate:materialization": "bun scripts/materialization-gate.ts",
+    "watch:materialization": "bun scripts/materialization-watch.ts",
     "example:materialization": "bun run build:model && bun examples/materialization/run.ts",
     "start": "bun src/cli.ts serve --config object-mcp.config.json",
     "typecheck": "tsc --noEmit",

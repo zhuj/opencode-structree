@@ -33,6 +33,36 @@ Validation and materialization return before framework initialization. They do n
 
 `--check` performs no writes, including when the output directory does not exist. Missing output is drift, not a request to generate it.
 
+## Read-Model Tools
+
+The generated graph is consumable as data through two source library exports:
+
+- `@local/object-mcp/graph-tools`: pure helpers `lookupByFile`, `impactReport`, `traceability` and `renderMermaid` over `readonly MaterializedObject[]`.
+- `@local/object-mcp/graph-diff`: pure `diffGraphs(previous, current)` reporting added/removed objects and per-object header, relation, binding, body and provenance changes.
+
+Each CLI command loads `<out>/graph.ts` (default `.local/.structree/materialized`, `--out` overrides), prints one JSON object, ignores `relates` for impact, and rejects unknown types/options without touching the vault or generated code:
+
+```bash
+bun src/cli.ts lookup --file src/orders.ts --root project
+bun src/cli.ts impact --of entity:orders-api --kinds depends,uses --depth 3
+bun src/cli.ts coverage --origin scenario_acceptance_criteria --evidence acceptance_test --kind justifies
+bun src/cli.ts diagram --of entity:orders-api --title "orders impact"
+bun src/cli.ts diff --base previous/materialized --compare generated/objects
+```
+
+Exit codes: `0` success (diff: outputs equal), `2` meaningfully different result (diff: outputs differ, validation failure), `1` usage or load errors. `lookup` requires an explicit `--root vault|project`; `coverage` requires `--kind`.
+
+## Daily Workflow
+
+```bash
+bun run gate:materialization     # strict source validation + non-writing drift check
+bun run watch:materialization    # regenerate the read model on Markdown changes
+```
+
+`gate:materialization` passes only when the vault has zero errors and zero partial documents and the existing output matches the vault in `check` mode (no writes). It exits `0` cleanly, `2` as a gate failure, and `1` on usage problems. Wire it into CI before or alongside the general test suite; run `diff --base` against the previous revision's materialized directory as a separate artifact when relation-structure changes should be reviewed deliberately.
+
+`watch:materialization` is a development tool: it republishes derived artifacts after debounced Markdown changes and keeps the previous good output whenever sources are invalid (diagnostics streamed as JSON lines). It initializes no framework, records no timestamps, and is not for CI.
+
 ## Library API
 
 ```typescript
@@ -151,6 +181,6 @@ Policy success proves those graph rules, not the actual behavior of an implement
 
 CLI `serve` registers `objects_validate` and `objects_materialize({ check?: boolean })`; library server hosts opt in with `registerMaterializationTools`. Callers cannot override paths, imports or execution options. Invalid results or `clean: false` produce MCP error results. The materialize annotation is write-capable even when a particular call selects non-writing check mode.
 
-Useful next tools over this read model include semantic graph diffs, file-to-intent lookup, impact reports enriched with file/test bindings, traceability coverage reports and derived architecture diagrams. They need not add another source of truth or an arbitrary execution tool. Impact-based test selection should be presented as candidates, not proof of complete test coverage.
+The read-model tools above are read-only helpers over the same generated graph: they add no source of truth and no arbitrary execution tool. Impact-based test selection should be presented as candidates, not proof of complete test coverage.
 
 Comparable approaches include [Velite's typed content pipeline](https://velite.js.org/), [Projen's source-owned generated files](https://projen.io/docs/introduction/getting-started/) and [Structurizr's model/relationship projections](https://docs.structurizr.com/dsl). Their useful common pattern is a validated authoritative model with disposable derived artifacts, not bidirectional editing of generated files.
