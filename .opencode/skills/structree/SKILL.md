@@ -211,6 +211,68 @@ but the object does not mean what the field says. A target that names no
 object is not in the answer set, because it is not an object; its edge and its
 finding still report the broken link.
 
+#### Local materialized graph tools
+
+Use `objects_relations` for exact, current vault impact. Use the local CLI for
+offline/snapshot file bindings, traceability reports, diagrams and graph diffs,
+or when a local CLI workflow is preferred. These are CLI commands, not MCP
+tools. Markdown remains authoritative; the generated graph is derived,
+disposable data, not a replacement for source-backed reads or write checksums.
+
+Run from the project root. The read commands load `<out>/graph.ts`, defaulting
+to `.local/.structree/materialized`, without starting the framework, loading
+configuration, reconciling sources or preparing a model. They do not change
+Markdown. The loader imports the generated data module, so use trusted generated
+output, not arbitrary TypeScript supplied as a snapshot.
+
+Representative commands (replace the example paths and ids):
+
+```bash
+bun src/cli.ts lookup --file src/service.ts --root project --strict
+bun src/cli.ts impact --of adr:adr-example --depth 3 --include-retired=false
+bun src/cli.ts coverage --origin scenario_acceptance_criteria --evidence acceptance_test --kind justifies
+bun src/cli.ts diagram --of adr:adr-example --kinds depends,justifies
+bun src/cli.ts diff --base snapshots/before --compare snapshots/after
+```
+
+- `lookup` requires an explicit `--root vault|project`; it does not guess the
+  file binding's root.
+- `lookup`, `impact`, `coverage` and `diagram` accept `--out <dir>`. `impact`
+  also accepts `--kinds a,b`; `coverage` accepts `--require-active=true` to
+  require active evidence (the default is false). `diagram` accepts `--types
+  a,b` and `--title <text>`, and returns Mermaid text inside JSON.
+- `diff` compares two output directories, with optional `--ignore-body`.
+  Exit `0` means equal and `2` means different; usage, load or runtime errors
+  exit `1`. The other read commands return `0` on success and `1` on error.
+- For TypeScript consumers, `@local/object-mcp/graph-tools` exports the pure
+  helpers `lookupByFile`, `impactReport`, `traceability` and `renderMermaid`;
+  `@local/object-mcp/graph-diff` exports `diffGraphs`.
+
+Before relying on a snapshot after changes, run the read-only gate against the
+intended vault configuration and output directory:
+
+```bash
+bun run gate:materialization
+# Optional for a nondefault vault/output:
+bun run gate:materialization --config path/to/config.yaml --out path/to/output
+```
+
+The gate performs strict validation (valid vault, zero partial objects), then a
+non-writing drift check. Exit `0` means strict-clean, `2` means invalid/partial
+sources or output drift, and `1` means a usage/configuration/runtime failure.
+Do not claim freshness if it fails; use authoritative MCP reads instead, or
+regenerate with `bun run materialize` only when generated-output writes are
+explicitly allowed, then rerun the gate. A pass describes the checked state,
+not changes made afterwards.
+
+For development only, `bun run watch:materialization [--config path] [--out dir]`
+is a debounced watcher, not an MCP tool or a CI gate. With write permission it
+regenerates output only when the vault is valid with zero partial objects,
+preserving the previous output on invalid source. Write-mode materialization
+and the watcher write generated output; `materialize --check` and the gate do
+not. Coverage, graph policies and a clean gate describe recorded structure,
+not proof that implementation works or that tests ran.
+
 ### 5. Write
 
 Every object needs all of its fields, including the null ones. `retiredAt` is
