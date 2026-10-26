@@ -280,6 +280,21 @@ Every object needs all of its fields, including the null ones. `retiredAt` is
 `retiredAt` to exclude it. This is existing behavior, not a retrieval change.
 `relations` is an object even when empty.
 
+#### Keep references in both metadata and prose
+
+When creating or updating an object, record its references in the appropriate
+frontmatter relation fields and also link the targets in the Markdown body using
+Obsidian wikilinks. For example, `relations.commitment.scenarios: ["scenario-x"]`
+can accompany prose linking to `[[scenarios/scenario-x|Scenario X]]`. Use the
+target's actual vault-relative path, and explain the connection in the prose;
+do not invent a target or a relation merely to add a link.
+
+Maintain both representations deliberately when authoring an object. Do not
+automatically derive or add frontmatter references by scanning body wikilinks.
+A missing body link is never a reason to remove a frontmatter reference
+automatically. Choose the typed relation field intentionally; do not guess its
+meaning from a body link.
+
 **Create** supplies every field. Timestamps are yours to set, not the server's:
 
 ```jsonc
@@ -296,7 +311,7 @@ Every object needs all of its fields, including the null ones. `retiredAt` is
     "metadata": {},
     "relations": { "commitment": { "scenarios": ["scenario-x"] }, "partOf": null, "dependsOn": [] }
   },
-  "body": "# The Graph Is the Project Intent\n\n..."
+  "body": "# The Graph Is the Project Intent\n\nThis decision supports [[scenarios/scenario-x|Scenario X]]."
 }
 ```
 
