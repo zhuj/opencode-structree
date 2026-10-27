@@ -1,7 +1,14 @@
 #!/usr/bin/env bun
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 import { StdioServerTransport, serveStdio } from "@modelcontextprotocol/server/stdio";
 import { GRAPH_COMMAND_USAGE, isGraphCommand, runGraphCommand } from "./graph-tools-cli.ts";
-import { loadConfig, loadDefaultConfig } from "./lib/config.ts";
+import {
+  defaultConfig,
+  LOCAL_STATE_RELATIVE_DIRECTORY,
+  loadConfig,
+  loadDefaultConfig,
+} from "./lib/config.ts";
 import { createResilientRuntime } from "./lib/resilient-runtime.ts";
 import { parseCommandOptions, runMaterializationCommand } from "./materialization-cli.ts";
 import { createMaterializationServer } from "./materialization-server.ts";
@@ -22,7 +29,7 @@ async function main(): Promise<void> {
   }
   if (["--help", "-h", "help"].includes(command)) {
     process.stdout.write(
-      "Usage: bun src/cli.ts <serve|sync|status> [--config <file>]\n       bun src/cli.ts <validate|materialize> [--config <file>] [--check] [--out <path>]\n\nserve: MCP over stdio (opens an existing configured root)\nsync: reconcile files, report errors, exit\nstatus: startup reconciliation and current index status\nvalidate: read-only source validation\nmaterialize: generate data-only artifacts [--check] [--out <path>]\n\nWithout --config the built-in defaults apply. The optional .local/.structree/config.yaml is read from the working directory when it exists. Materialized output defaults to .local/.structree/materialized under the working directory. --check reports drift without writing. If config or registry cannot be loaded, use bun src/recovery-cli.ts with an explicit existing root for independent read/list access.\n",
+      "Usage: bun src/cli.ts <serve|sync|status> [--config <file>]\n       bun src/cli.ts <validate|materialize> [--config <file>] [--check] [--out <path>]\n\nserve: MCP over stdio (creates local state and the default objects root; custom roots must exist)\nsync: reconcile files, report errors, exit\nstatus: startup reconciliation and current index status\nvalidate: read-only source validation\nmaterialize: generate data-only artifacts [--check] [--out <path>]\n\nWithout --config the built-in defaults apply. The optional .local/.structree/config.yaml is read from the working directory when it exists. Materialized output defaults to .local/.structree/materialized under the working directory. --check reports drift without writing. If config or registry cannot be loaded, use bun src/recovery-cli.ts with an explicit existing root for independent read/list access.\n",
     );
     process.stdout.write(`${GRAPH_COMMAND_USAGE}\n`);
     return;
@@ -44,6 +51,9 @@ async function main(): Promise<void> {
   const options = isMaterialization
     ? parseCommandOptions(command, tail)
     : { configFile: tail[1], outputDirectory: undefined, check: false };
+  if (command === "serve") {
+    await mkdir(path.resolve(process.cwd(), LOCAL_STATE_RELATIVE_DIRECTORY), { recursive: true });
+  }
   const config =
     options.configFile === undefined
       ? await loadDefaultConfig()
@@ -81,6 +91,9 @@ async function main(): Promise<void> {
       await framework.close();
     }
     return;
+  }
+  if (config.root === path.resolve(process.cwd(), defaultConfig.root)) {
+    await mkdir(config.root, { recursive: true });
   }
   const runtime = await createResilientRuntime({
     config,

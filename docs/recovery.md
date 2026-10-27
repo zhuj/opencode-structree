@@ -258,8 +258,13 @@ still applies; noncooperative factories or OS operations can delay draining.
 Normal `serve` uses this composition without awaiting optional startup or
 preparing embeddings. Explicit `sync`/`status` retain their maintenance/startup
 semantics, with watching disabled; only explicit `sync` prepares embeddings.
-Serve requires an existing source root. Broken config/registry/MCP loading still
-uses the independent recovery CLI rather than a guessed root.
+The application `serve` command creates cwd-relative `.local/.structree` before
+loading configuration, and creates `.local/.structree/objects` when that exact
+default source root is selected. This explicit startup bootstrap is idempotent;
+it does not write a configuration file or create a missing custom source root.
+Library source-root opening, doctor and independent recovery remain noncreating.
+Broken config/registry/MCP loading still uses the independent recovery CLI rather
+than a guessed root.
 
 A search fallback reports the mode actually used. The current implementation
 returns `{mode: "source", requestedMode, hits, indexGeneration: null, complete,
