@@ -12,6 +12,21 @@ export {
   loadDefaultConfig,
   McpInputRepairConfigSchema,
 } from "./config.ts";
+export type {
+  DoctorFinding,
+  DoctorOptions,
+  DoctorProbe,
+  DoctorProbeId,
+  DoctorReport,
+  FindingActionId,
+  FindingSeverity,
+  ProbeCoverage,
+  ProbeExecution,
+  ProbeStatus,
+  ProbeSummary,
+} from "./doctor/index.ts";
+export { DOCTOR_PROBES, doctorExitCode, runDoctorReport } from "./doctor/index.ts";
+export { type DoctorToolHostOptions, registerDoctorTools } from "./doctor-mcp.ts";
 export {
   createEmbeddingProvider,
   createOnnxEmbeddingProvider,
@@ -39,5 +54,29 @@ export {
   registerObjectTools,
 } from "./mcp.ts";
 export { ObjectRegistry } from "./registry.ts";
+export { createResilientRuntime, type ResilientRuntimeOptions } from "./resilient-runtime.ts";
+export {
+  type CapabilityReadiness,
+  createSourceAccess,
+  type SourceAccess,
+  type SourceAccessOptions,
+  type SourceIdentityAssurance,
+  type SourceReadObject,
+} from "./source-access/index.ts";
+export {
+  type AnySourceRepairPlan,
+  createSourceRepairSession,
+  type SourceDraftPlan,
+  SourceRepairError,
+  type SourceRepairOptions,
+  type SourceRepairPlan,
+  type SourceRepairResult,
+  type SourceRepairSession,
+  type SourceSalvagePlan,
+} from "./source-repair/index.ts";
+export {
+  registerSourceRepairTools,
+  type SourceRepairToolHostOptions,
+} from "./source-repair-mcp.ts";
 export * from "./types.ts";
 export * from "./vault/index.ts";

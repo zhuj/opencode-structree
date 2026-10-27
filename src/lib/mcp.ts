@@ -136,6 +136,13 @@ const DocumentIdentitySchema = Schema.Struct({
   id: Schema.String,
   type: Schema.String,
 });
+const SourceIdentityAssuranceSchema = Schema.Struct({
+  complete: Schema.Literal(false),
+  identity: Schema.Literal("unverified"),
+  issues: Schema.Array(
+    Schema.Struct({ path: Schema.String, code: Schema.String, message: Schema.String }),
+  ),
+});
 const PartialReadFields = {
   partial: Schema.Literal(true),
   object: Schema.JsonObject,
@@ -164,22 +171,57 @@ const SearchHitFields = {
   body: Schema.optionalKey(Schema.String),
 };
 const SearchOutput = effectMcpSchema(
-  Schema.Struct({
-    mode: Schema.Literals(["fulltext", "semantic", "hybrid"]),
-    hits: Schema.Array(
-      Schema.Union([
-        Schema.Struct({
-          ...SearchHitFields,
-          partial: Schema.optionalKey(Schema.Literal(false)),
-          object: Schema.optionalKey(Schema.Never),
-          identity: Schema.optionalKey(Schema.Never),
-          issues: Schema.optionalKey(Schema.Never),
-        }),
-        Schema.Struct({ ...SearchHitFields, ...PartialReadFields }),
-      ]),
-    ),
-    indexGeneration: NonnegativeInt,
-  }),
+  Schema.Union([
+    Schema.Struct({
+      mode: Schema.Literals(["fulltext", "semantic", "hybrid"]),
+      hits: Schema.Array(
+        Schema.Union([
+          Schema.Struct({
+            ...SearchHitFields,
+            partial: Schema.optionalKey(Schema.Literal(false)),
+            object: Schema.optionalKey(Schema.Never),
+            identity: Schema.optionalKey(Schema.Never),
+            issues: Schema.optionalKey(Schema.Never),
+          }),
+          Schema.Struct({ ...SearchHitFields, ...PartialReadFields }),
+        ]),
+      ),
+      indexGeneration: NonnegativeInt,
+    }),
+    Schema.Struct({
+      mode: Schema.Literal("source"),
+      requestedMode: Schema.Literals(["fulltext", "semantic", "hybrid"]),
+      hits: Schema.Array(
+        Schema.Union([
+          Schema.Struct({
+            ...SearchHitFields,
+            partial: Schema.optionalKey(Schema.Literal(false)),
+            object: Schema.optionalKey(Schema.Never),
+            identity: Schema.optionalKey(Schema.Never),
+            issues: Schema.optionalKey(Schema.Never),
+          }),
+          Schema.Struct({ ...SearchHitFields, ...PartialReadFields }),
+        ]),
+      ),
+      indexGeneration: Schema.Null,
+      complete: Schema.Boolean,
+      observedCount: NonnegativeInt,
+      issues: Schema.Array(
+        Schema.Struct({ path: Schema.String, code: Schema.String, message: Schema.String }),
+      ),
+      recovery: Schema.Struct({
+        state: Schema.Literal("degraded"),
+        code: Schema.Literals([
+          "SOURCE_ONLY",
+          "CAPABILITY_STARTING",
+          "CAPABILITY_FAILED",
+          "DERIVED_SEARCH_FAILED",
+          "INDEX_NOT_READY",
+          "SEMANTIC_INDEX_NOT_READY",
+        ]),
+      }),
+    }),
+  ]),
 );
 const ResyncOutput = effectMcpSchema(
   Schema.Struct({
@@ -378,6 +420,7 @@ export function registerObjectTools(
         checksum: stored.checksum,
         issues: stored.issues,
         identity: stored.identity,
+        ...(stored.assurance === undefined ? {} : { assurance: stored.assurance }),
       };
     }
     return {
@@ -386,6 +429,7 @@ export function registerObjectTools(
       ...(includeBody ? { body: stored.body } : {}),
       path: stored.path,
       checksum: stored.checksum,
+      ...(stored.assurance === undefined ? {} : { assurance: stored.assurance }),
     };
   };
 
@@ -398,13 +442,18 @@ export function registerObjectTools(
       checksum: Schema.String,
     });
     const storedOutput = effectMcpSchema(storedSchema);
+    const readStoredSchema = Schema.Struct({
+      ...storedSchema.fields,
+      assurance: Schema.optionalKey(SourceIdentityAssuranceSchema),
+    });
     const partialSchema = Schema.Struct({
       ...storedSchema.fields,
       ...PartialReadFields,
+      assurance: Schema.optionalKey(SourceIdentityAssuranceSchema),
       body: Schema.String,
       raw: Schema.String,
     });
-    const readOutput = effectMcpSchema(Schema.Union([storedSchema, partialSchema]));
+    const readOutput = effectMcpSchema(Schema.Union([readStoredSchema, partialSchema]));
     server.registerTool(
       `${definition.name}_create`,
       {
@@ -519,26 +568,67 @@ export function registerObjectTools(
     server.registerTool(
       `${definition.name}_list`,
       {
-        description: `List ${definition.name} objects read from the filesystem, in identifier order. Partial or recoverable documents are included when readable; identity uses the registered directory and, if needed, the filename stem as an explicitly inferred fallback. Set includeBody to false to omit the Markdown body; reduced listings also omit partial raw content, which remains available on direct get. A retired object is still listed; check its retiredAt field to exclude it. No automatic repair or rename of partial files occurs during listing or resync. ${WORKFLOW_CLAUSE}`,
+        description: `List ${definition.name} objects read from the filesystem, in identifier order. Partial or recoverable documents are included when readable; identity uses the registered directory and, if needed, the filename stem as an explicitly inferred fallback. Set includeBody to false to omit the Markdown body; reduced listings also omit partial raw content, which remains available on direct get. A retired object is still listed; check its retiredAt field to exclude it. If discovery is incomplete (unreadable sources, conflicts, or non-semantic issues), listing returns complete:false with total:null, observedCount, issues, and pagination continuation; it never claims a complete total when sources were unreadable. No automatic repair or rename of partial files occurs during listing or resync. ${WORKFLOW_CLAUSE}`,
         inputSchema: input.schema(listInput),
         outputSchema: effectMcpSchema(
-          Schema.Struct({
-            // The list output is the stored shape without the body, so the two cannot drift apart.
-            objects: Schema.Array(
-              Schema.Union([
+          Schema.Union([
+            Schema.Struct({
+              objects: Schema.Array(
+                Schema.Union([
+                  Schema.Struct({
+                    ...readStoredSchema.fields,
+                    body: Schema.optionalKey(Schema.String),
+                  }),
+                  Schema.Struct({
+                    ...partialSchema.fields,
+                    body: Schema.optionalKey(Schema.String),
+                    raw: Schema.optionalKey(Schema.String),
+                  }),
+                ]),
+              ),
+              total: NonnegativeInt,
+              complete: Schema.optionalKey(Schema.Literal(true)),
+              observedCount: Schema.optionalKey(NonnegativeInt),
+              issues: Schema.optionalKey(
+                Schema.Array(
+                  Schema.Struct({
+                    path: Schema.String,
+                    code: Schema.String,
+                    message: Schema.String,
+                  }),
+                ),
+              ),
+              continuation: Schema.optionalKey(
+                Schema.NullOr(Schema.Struct({ offset: NonnegativeInt })),
+              ),
+            }),
+            Schema.Struct({
+              objects: Schema.Array(
+                Schema.Union([
+                  Schema.Struct({
+                    ...readStoredSchema.fields,
+                    body: Schema.optionalKey(Schema.String),
+                  }),
+                  Schema.Struct({
+                    ...partialSchema.fields,
+                    body: Schema.optionalKey(Schema.String),
+                    raw: Schema.optionalKey(Schema.String),
+                  }),
+                ]),
+              ),
+              total: Schema.Null,
+              complete: Schema.Literal(false),
+              observedCount: NonnegativeInt,
+              issues: Schema.Array(
                 Schema.Struct({
-                  ...storedSchema.fields,
-                  body: Schema.optionalKey(Schema.String),
+                  path: Schema.String,
+                  code: Schema.String,
+                  message: Schema.String,
                 }),
-                Schema.Struct({
-                  ...partialSchema.fields,
-                  body: Schema.optionalKey(Schema.String),
-                  raw: Schema.optionalKey(Schema.String),
-                }),
-              ]),
-            ),
-            total: NonnegativeInt,
-          }),
+              ),
+              continuation: Schema.NullOr(Schema.Struct({ offset: NonnegativeInt })),
+            }),
+          ]),
         ),
         annotations: readOnly,
       },
@@ -547,8 +637,8 @@ export function registerObjectTools(
           const listed = await facade.list(definition.name, args, ctx.mcpReq.signal);
           const includeBody = args.includeBody ?? true;
           return {
+            ...listed,
             objects: listed.objects.map((stored) => encodeStored(stored, includeBody)),
-            total: listed.total,
           };
         }),
     );

@@ -26,12 +26,24 @@ export async function scanSources(
   );
   const walk = async (directory: string): Promise<void> => {
     signal?.throwIfAborted();
-    const entries = await fs.readdir(path.join(root, directory), { withFileTypes: true });
-    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    const entries = await fs.readdir(path.join(root, directory), { encoding: "buffer" });
+    entries.sort((a, b) => Buffer.compare(a, b));
     for (const entry of entries) {
       signal?.throwIfAborted();
-      const relative = directory ? `${directory}/${entry.name}` : entry.name;
-      if (entry.isSymbolicLink()) {
+      let name: string;
+      try {
+        name = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(entry);
+      } catch {
+        scan.diagnostics.push({
+          code: "SOURCE_PATH",
+          severity: "error",
+          message: "A source entry has a filename that is not valid UTF-8.",
+        });
+        continue;
+      }
+      const relative = directory ? `${directory}/${name}` : name;
+      const stat = await fs.lstat(path.join(root, relative));
+      if (stat.isSymbolicLink()) {
         scan.diagnostics.push({
           code: "SOURCE_PATH",
           severity: "error",
@@ -40,11 +52,20 @@ export async function scanSources(
         });
         continue;
       }
-      if (entry.isDirectory()) {
+      if (stat.isDirectory()) {
         await walk(relative);
         continue;
       }
-      if (!entry.name.toLowerCase().endsWith(".md")) continue;
+      if (!name.toLowerCase().endsWith(".md")) continue;
+      if (!stat.isFile()) {
+        scan.diagnostics.push({
+          code: "SOURCE_PATH",
+          severity: "error",
+          path: relative,
+          message: "A Markdown source entry is not a regular file.",
+        });
+        continue;
+      }
       scan.scanned++;
       const definition = definitions.find((d) => relative.startsWith(`${d.directory}/`));
       if (!definition) {

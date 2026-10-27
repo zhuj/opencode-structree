@@ -18,20 +18,22 @@ export class OwnedStage {
     private readonly handle: fs.FileHandle,
     private readonly parent: ConfinedDirectory,
     private readonly release: () => void,
-    raw: string,
+    payload: string | Uint8Array,
   ) {
-    this.checksum = checksum(raw);
-    this.byteLength = Buffer.byteLength(raw, "utf8");
+    this.checksum = checksum(payload);
+    this.byteLength =
+      typeof payload === "string" ? Buffer.byteLength(payload, "utf8") : payload.byteLength;
   }
 
   private readonly byteLength: number;
 
   static async create(
     destination: string,
-    raw: string,
+    payload: string | Uint8Array,
     parent: ConfinedDirectory,
     release: () => void,
   ): Promise<OwnedStage> {
+    const ownedPayload = typeof payload === "string" ? payload : Buffer.from(payload);
     const name = `.vault-stage-${randomUUID()}.tmp`;
     let handle: fs.FileHandle | undefined;
     try {
@@ -40,9 +42,10 @@ export class OwnedStage {
         constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
         0o600,
       );
-      const stage = new OwnedStage(destination, name, handle, parent, release, raw);
+      const stage = new OwnedStage(destination, name, handle, parent, release, ownedPayload);
       try {
-        await handle.writeFile(raw, "utf8");
+        if (typeof ownedPayload === "string") await handle.writeFile(ownedPayload, "utf8");
+        else await handle.writeFile(ownedPayload);
         await handle.sync();
         return stage;
       } catch (error) {

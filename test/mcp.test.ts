@@ -309,7 +309,7 @@ describe("official MCP adapter", () => {
       expect(tools).toHaveLength(65);
       const search = tools.find((tool) => tool.name === "objects_search")!;
       for (const branch of [0, 1]) {
-        const prefix = `properties.hits.items.anyOf.${branch}`;
+        const prefix = `anyOf.0.properties.hits.items.anyOf.${branch}`;
         expect(search.outputSchema).toHaveProperty(
           `${prefix}.required`,
           expect.not.arrayContaining(["fulltextExcerpt"]),
@@ -320,11 +320,33 @@ describe("official MCP adapter", () => {
         );
       }
       expect(search.outputSchema).toHaveProperty(
-        "properties.hits.items.anyOf.0.properties.partial.enum",
+        "anyOf.0.properties.hits.items.anyOf.0.properties.partial.enum",
         [false],
       );
       expect(search.outputSchema).toHaveProperty(
-        "properties.hits.items.anyOf.1.required",
+        "anyOf.0.properties.hits.items.anyOf.1.required",
+        expect.arrayContaining(["partial", "object", "identity", "issues"]),
+      );
+      expect(search.outputSchema).toHaveProperty("anyOf.0.properties.mode.enum", [
+        "fulltext",
+        "semantic",
+        "hybrid",
+      ]);
+      expect(search.outputSchema).toHaveProperty("anyOf.1.properties.mode.enum", ["source"]);
+      expect(search.outputSchema).toHaveProperty(
+        "anyOf.1.required",
+        expect.arrayContaining([
+          "requestedMode",
+          "hits",
+          "indexGeneration",
+          "complete",
+          "observedCount",
+          "issues",
+          "recovery",
+        ]),
+      );
+      expect(search.outputSchema).toHaveProperty(
+        "anyOf.1.properties.hits.items.anyOf.1.required",
         expect.arrayContaining(["partial", "object", "identity", "issues"]),
       );
       expect(search.description).toContain(

@@ -1,4 +1,5 @@
 import { constants, type Dirent } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import { FrameworkError } from "../errors.ts";
@@ -10,11 +11,27 @@ import {
   sameIdentity,
 } from "./confined-directory.ts";
 import { OwnedStage } from "./owned-stage.ts";
+import { retrySourceFileOperation } from "./source-read-retry.ts";
 import { assertUtf8Text } from "./utf8.ts";
+
+export type ReadBufferOperation = (
+  handle: FileHandle,
+  buffer: Buffer,
+  offset: number,
+  length: number,
+  position: number,
+) => Promise<{ readonly bytesRead: number }>;
+
+const defaultReadBuffer: ReadBufferOperation = (handle, buffer, offset, length, position) =>
+  handle.read(buffer, offset, length, position);
 
 export interface ConfinedFilesystemOptions {
   readonly maxFileBytes?: number;
   readonly confinement?: "auto" | "descriptor" | "portable";
+  readonly readOnly?: boolean;
+  readonly createRoot?: boolean;
+  /** Positional file-content read adapter; only accepted for read-only instances. */
+  readonly readBuffer?: ReadBufferOperation;
 }
 
 export interface VaultFile {
@@ -54,6 +71,9 @@ export class ConfinedFilesystem {
   private mutationTail = Promise.resolve();
   private readonly stages = new WeakSet<OwnedStage>();
   private readonly requestedConfinement: "auto" | "descriptor" | "portable";
+  private readonly readOnly: boolean;
+  private readonly createRoot: boolean;
+  private readonly readBuffer: ReadBufferOperation;
 
   constructor(
     readonly configuredRoot: string,
@@ -64,6 +84,14 @@ export class ConfinedFilesystem {
     assertUtf8Text(configuredRoot);
     this.maxFileBytes = options.maxFileBytes ?? 5_000_000;
     this.requestedConfinement = options.confinement ?? "auto";
+    this.readOnly = options.readOnly ?? false;
+    this.createRoot = !this.readOnly && (options.createRoot ?? true);
+    if (options.readBuffer && !this.readOnly)
+      throw new FrameworkError(
+        "CONFIG",
+        "A custom read-buffer operation requires read-only access.",
+      );
+    this.readBuffer = options.readBuffer ?? defaultReadBuffer;
     if (!Number.isSafeInteger(this.maxFileBytes) || this.maxFileBytes < 1)
       throw new FrameworkError("CONFIG", "Vault maxFileBytes must be a positive safe integer.");
   }
@@ -83,7 +111,7 @@ export class ConfinedFilesystem {
   }
 
   private async openRoot(): Promise<void> {
-    await fs.mkdir(this.configuredRoot, { recursive: true });
+    if (this.createRoot) await fs.mkdir(this.configuredRoot, { recursive: true });
     const absolute = await fs.realpath(this.configuredRoot);
     let descriptors = false;
     if (
@@ -161,6 +189,7 @@ export class ConfinedFilesystem {
   }
 
   async ensureDirectory(relative: string, create = true): Promise<string> {
+    if (create) this.assertWritable();
     const parts = pathComponents(relative, true);
     const release = await this.retain();
     try {
@@ -206,9 +235,11 @@ export class ConfinedFilesystem {
     const before = await fs.lstat(parent.child(name));
     if (before.isSymbolicLink() || !before.isFile())
       throw new FrameworkError("PATH", `Vault path must be a regular file: ${relative}`);
-    const handle = await fs.open(
-      parent.child(name),
-      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    const handle = await retrySourceFileOperation(() =>
+      fs.open(
+        parent.child(name),
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+      ),
     );
     try {
       const opened = await handle.stat();
@@ -220,7 +251,9 @@ export class ConfinedFilesystem {
       while (size <= this.maxFileBytes) {
         signal?.throwIfAborted();
         const buffer = Buffer.alloc(Math.min(64 * 1024, this.maxFileBytes + 1 - size));
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, size);
+        const { bytesRead } = await retrySourceFileOperation(() =>
+          this.readBuffer(handle, buffer, 0, buffer.length, size),
+        );
         if (!bytesRead) break;
         pieces.push(buffer.subarray(0, bytesRead));
         size += bytesRead;
@@ -261,6 +294,12 @@ export class ConfinedFilesystem {
     );
   }
 
+  async readBytes(relative: string, signal?: AbortSignal): Promise<Uint8Array> {
+    return this.parent(relative, false, async (parent, name) =>
+      Buffer.from((await this.readFrom(parent, name, relative, signal)).bytes),
+    );
+  }
+
   async hash(relative: string, signal?: AbortSignal): Promise<string | null> {
     try {
       return await this.parent(relative, false, async (parent, name) =>
@@ -273,11 +312,29 @@ export class ConfinedFilesystem {
   }
 
   async stage(relative: string, raw: string, signal?: AbortSignal): Promise<OwnedStage> {
+    this.assertWritable();
     signal?.throwIfAborted();
     if (typeof raw !== "string")
       throw new FrameworkError("VALIDATION", "Vault content must be a string.");
     assertUtf8Text(raw);
     if (Buffer.byteLength(raw, "utf8") > this.maxFileBytes) this.tooLarge(relative);
+    return this.stagePayload(relative, raw, signal);
+  }
+
+  async stageBytes(relative: string, bytes: Uint8Array, signal?: AbortSignal): Promise<OwnedStage> {
+    this.assertWritable();
+    signal?.throwIfAborted();
+    const snapshot = Buffer.from(bytes);
+    if (snapshot.byteLength > this.maxFileBytes) this.tooLarge(relative);
+    return this.stagePayload(relative, snapshot, signal);
+  }
+
+  private async stagePayload(
+    relative: string,
+    payload: string | Uint8Array,
+    signal?: AbortSignal,
+  ): Promise<OwnedStage> {
+    signal?.throwIfAborted();
     const parts = pathComponents(relative);
     parts.pop();
     const release = await this.retain();
@@ -288,7 +345,7 @@ export class ConfinedFilesystem {
       release();
       throw error;
     }
-    const stage = await OwnedStage.create(relative, raw, parent, release);
+    const stage = await OwnedStage.create(relative, payload, parent, release);
     this.stages.add(stage);
     return stage;
   }
@@ -298,6 +355,7 @@ export class ConfinedFilesystem {
     expectation: WriteExpectation,
     signal?: AbortSignal,
   ): Promise<void> {
+    this.assertWritable();
     if (!this.stages.delete(stage))
       throw new FrameworkError("STAGE", "Vault stage is foreign or has already been consumed.");
     return this.mutate(() => this.publishStage(stage, expectation, signal));
@@ -365,6 +423,20 @@ export class ConfinedFilesystem {
     }
   }
 
+  async writeBytes(
+    relative: string,
+    bytes: Uint8Array,
+    expectation: WriteExpectation,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const stage = await this.stageBytes(relative, bytes, signal);
+    try {
+      await this.publish(stage, expectation, signal);
+    } finally {
+      await stage.cleanup();
+    }
+  }
+
   /** Link publication is exclusive, unlike rename(), which can overwrite a destination. */
   async renameBasename(
     relative: string,
@@ -372,6 +444,7 @@ export class ConfinedFilesystem {
     expectedChecksum: string,
     signal?: AbortSignal,
   ): Promise<BasenameRenameResult> {
+    this.assertWritable();
     if (pathComponents(basename).length !== 1)
       throw new FrameworkError("PATH", "A rename must stay in the same directory.");
     return this.mutate(() =>
@@ -406,6 +479,7 @@ export class ConfinedFilesystem {
   }
 
   async delete(relative: string, expectedChecksum: string, signal?: AbortSignal): Promise<void> {
+    this.assertWritable();
     await this.mutate(() =>
       this.parent(relative, false, async (parent, name) => {
         const current = await this.readFrom(parent, name, relative, signal);
@@ -433,6 +507,10 @@ export class ConfinedFilesystem {
       () => undefined,
     );
     return result;
+  }
+
+  private assertWritable(): void {
+    if (this.readOnly) throw new FrameworkError("READ_ONLY", "Vault filesystem is read-only.");
   }
 
   async walk(relative = "", signal?: AbortSignal): Promise<VaultWalkResult> {

@@ -19,10 +19,16 @@
     "./materialization": "./src/lib/materialization/index.ts",
     "./materialization-mcp": "./src/lib/materialization-mcp.ts",
     "./graph-tools": "./src/lib/graph-tools/index.ts",
-    "./graph-diff": "./src/lib/graph-diff/index.ts"
+    "./graph-diff": "./src/lib/graph-diff/index.ts",
+    "./recovery": "./src/lib/recovery/index.ts",
+    "./cache-recovery": "./src/lib/cache-recovery/index.ts",
+    "./source-repair": "./src/lib/source-repair/index.ts"
   },
   "scripts": {
-    "build": "bun build ./src/cli.ts --target=bun --packages=external --outdir=dist && bun run build:model",
+    "recover": "bun src/recovery-cli.ts",
+    "repair": "bun src/repair-cli.ts",
+    "doctor": "bun src/cli.ts doctor",
+    "build": "bun build ./src/cli.ts ./src/recovery-cli.ts ./src/repair-cli.ts ./src/cache-recovery-worker.ts --target=bun --packages=external --outdir=dist && bun run build:model",
     "build:model": "bun build ./src/lib/model/index.ts --target=browser --outdir=dist/model && tsc -p tsconfig.model.json",
     "validate": "bun src/cli.ts validate",
     "materialize": "bun src/cli.ts materialize",

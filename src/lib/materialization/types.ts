@@ -16,6 +16,12 @@ export interface MaterializationOptions extends ValidationOptions {
   readonly outputDirectory: string;
   readonly check?: boolean;
   readonly modelImport?: string;
+  readonly inspectionLimits?: MaterializationInspectionLimits;
+}
+export interface MaterializationInspectionLimits {
+  readonly maxEntries: number;
+  readonly maxFileBytes: number;
+  readonly maxTotalBytes: number;
 }
 export interface Diagnostic {
   readonly code: string;

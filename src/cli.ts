@@ -1,17 +1,28 @@
 #!/usr/bin/env bun
 import { StdioServerTransport, serveStdio } from "@modelcontextprotocol/server/stdio";
-import { createFramework } from "./framework.ts";
 import { GRAPH_COMMAND_USAGE, isGraphCommand, runGraphCommand } from "./graph-tools-cli.ts";
 import { loadConfig, loadDefaultConfig } from "./lib/config.ts";
+import { createResilientRuntime } from "./lib/resilient-runtime.ts";
 import { parseCommandOptions, runMaterializationCommand } from "./materialization-cli.ts";
 import { createMaterializationServer } from "./materialization-server.ts";
+import { coreDefinitions } from "./registry.ts";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const command = args[0] ?? "serve";
+  if (command === "doctor") {
+    const { runDoctorCli } = await import("./doctor-cli.ts");
+    process.exitCode = await runDoctorCli(args.slice(1));
+    return;
+  }
+  if (command === "repair") {
+    const { runRepairCli } = await import("./repair-cli.ts");
+    process.exitCode = await runRepairCli(args.slice(1));
+    return;
+  }
   if (["--help", "-h", "help"].includes(command)) {
     process.stdout.write(
-      "Usage: bun src/cli.ts <serve|sync|status> [--config <file>]\n       bun src/cli.ts <validate|materialize> [--config <file>] [--check] [--out <path>]\n\nserve: MCP over stdio\nsync: reconcile files, report errors, exit\nstatus: startup reconciliation and current index status\nvalidate: read-only source validation\nmaterialize: generate data-only artifacts [--check] [--out <path>]\n\nWithout --config the built-in defaults apply. The optional .local/.structree/config.yaml is read from the working directory when it exists. Materialized output defaults to .local/.structree/materialized under the working directory. --check reports drift without writing.\n",
+      "Usage: bun src/cli.ts <serve|sync|status> [--config <file>]\n       bun src/cli.ts <validate|materialize> [--config <file>] [--check] [--out <path>]\n\nserve: MCP over stdio (opens an existing configured root)\nsync: reconcile files, report errors, exit\nstatus: startup reconciliation and current index status\nvalidate: read-only source validation\nmaterialize: generate data-only artifacts [--check] [--out <path>]\n\nWithout --config the built-in defaults apply. The optional .local/.structree/config.yaml is read from the working directory when it exists. Materialized output defaults to .local/.structree/materialized under the working directory. --check reports drift without writing. If config or registry cannot be loaded, use bun src/recovery-cli.ts with an explicit existing root for independent read/list access.\n",
     );
     process.stdout.write(`${GRAPH_COMMAND_USAGE}\n`);
     return;
@@ -47,22 +58,20 @@ async function main(): Promise<void> {
     });
     return;
   }
-  const framework = await createFramework({
-    waitForStartup: command !== "serve",
-    config: {
-      ...config,
-      sync: { ...config.sync, watch: command === "serve" && config.sync.watch },
-    },
-    onError: (error) => process.stderr.write(`[object-mcp] ${error.code}: ${error.message}\n`),
-  });
-  if (command === "serve" || command === "sync") {
-    try {
-      await framework.prepareEmbeddings();
-    } catch {
-      // The framework already reported the failure; the full-text path still works without the model.
-    }
-  }
   if (command !== "serve") {
+    const { createFramework } = await import("./framework.ts");
+    const framework = await createFramework({
+      waitForStartup: true,
+      config: { ...config, sync: { ...config.sync, watch: false } },
+      onError: (error) => process.stderr.write(`[object-mcp] ${error.code}: ${error.message}\n`),
+    });
+    if (command === "sync") {
+      try {
+        await framework.prepareEmbeddings();
+      } catch {
+        // The framework already reported the failure; the full-text path still works without the model.
+      }
+    }
     try {
       const output = command === "sync" ? framework.status().lastSync : framework.status();
       process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
@@ -73,16 +82,20 @@ async function main(): Promise<void> {
     }
     return;
   }
+  const runtime = await createResilientRuntime({
+    config,
+    definitions: coreDefinitions,
+  });
   const transport = new StdioServerTransport();
   const closeTransport = transport.close.bind(transport);
   transport.close = async () => {
     try {
       await closeTransport();
     } finally {
-      await framework.close();
+      await runtime.close();
     }
   };
-  const handle = serveStdio(() => createMaterializationServer(framework, config), {
+  const handle = serveStdio(() => createMaterializationServer(runtime, config), {
     transport,
     onerror: (error) => process.stderr.write(`[mcp] ${error.message}\n`),
   });
@@ -90,7 +103,7 @@ async function main(): Promise<void> {
   const shutdown = (): Promise<void> =>
     (shutdownPromise ??= (async () => {
       await handle.close();
-      await framework.close();
+      await runtime.close();
     })());
   const stop = () => {
     void shutdown().catch((error) => {

@@ -52,6 +52,7 @@ def call(process, request_id, method, params):
 
 def run():
     with tempfile.TemporaryDirectory(prefix="object-mcp-stdio-") as directory:
+        (Path(directory) / "objects").mkdir()
         config = Path(directory) / "config.json"
         config.write_text(
             json.dumps(
@@ -86,10 +87,16 @@ def run():
             assert opened["protocolVersion"] == "2025-11-25", opened
             send(process, {"jsonrpc": "2.0", "method": "notifications/initialized"})
             tools = call(process, 2, "tools/list", {})["tools"]
-            assert len(tools) == 67
+            assert len(tools) == 71
             assert {"objects_validate", "objects_materialize"} <= {
                 tool["name"] for tool in tools
             }
+            assert "objects_doctor" in {tool["name"] for tool in tools}
+            assert {
+                "objects_repair_plan",
+                "objects_repair_apply",
+                "objects_repair_rollback",
+            } <= {tool["name"] for tool in tools}
             value = {
                 "id": "stdio-test",
                 "name": "stdio-test",
@@ -117,6 +124,13 @@ def run():
             assert not created.get("isError"), created
             stored = created["structuredContent"]
             assert (Path(directory) / "objects" / stored["path"]).is_file()
+            resynced = call(
+                process,
+                30,
+                "tools/call",
+                {"name": "objects_resync", "arguments": {}},
+            )
+            assert not resynced.get("isError"), resynced
             searched = call(
                 process,
                 4,
@@ -130,6 +144,10 @@ def run():
                     },
                 },
             )
+            assert searched["structuredContent"]["mode"] == "fulltext", searched
+            assert isinstance(
+                searched["structuredContent"]["indexGeneration"], (int, float)
+            ), searched
             assert searched["structuredContent"]["hits"][0]["id"] == "stdio-test", (
                 searched
             )

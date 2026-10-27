@@ -90,6 +90,7 @@ describe("CLI argument and help contracts", () => {
 describe("CLI status and sync contracts", () => {
   test("serve answers status while startup is blocked, but diagnostic commands wait", async () => {
     const { directory, config } = await workspace();
+    await mkdir(path.join(directory, "objects"), { recursive: true });
     const preload = path.join(directory, "hold-startup.ts");
     await writeFile(
       preload,
@@ -150,16 +151,32 @@ FileStore.prototype.scan = async function (...args) {
         `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`,
       );
       const status = await request(2, "tools/call", { name: "objects_status", arguments: {} });
-      expect(status.structuredContent).toMatchObject({ syncing: true, lastSync: null });
+      expect(status.structuredContent).toMatchObject({
+        sourceAvailable: true,
+        source: "read-only",
+        capability: { state: "starting" },
+      });
       server.kill("SIGUSR2");
       serverReleased = true;
       let requestId = 3;
-      while (
-        (await request(requestId++, "tools/call", { name: "objects_status", arguments: {} }))
-          .structuredContent.syncing
-      ) {
+      let capabilityState: unknown;
+      while (true) {
+        const current = await request(requestId++, "tools/call", {
+          name: "objects_status",
+          arguments: {},
+        });
+        const capability = current.structuredContent.capability;
+        capabilityState = capability;
+        if (
+          typeof capability !== "object" ||
+          capability === null ||
+          !("state" in capability) ||
+          capability.state !== "starting"
+        )
+          break;
         // Observe completion through the server's public status surface, without sleeping.
       }
+      expect(capabilityState).toEqual({ state: "ready" });
       for (const command of ["sync", "status"]) {
         const diagnostic = Bun.spawn(
           [bun, "--preload", preload, cliScript, command, "--config", config],

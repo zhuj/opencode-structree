@@ -18,6 +18,7 @@ import {
   LIST_LIMIT_MAX,
   type ObjectDefinition,
   type ObjectFacade,
+  type ObjectListResult,
   RELATIONS_DEPTH_MAX,
   RELATIONS_EDGE_LIMIT,
   RELATIONS_IMPACT_KINDS,
@@ -68,6 +69,7 @@ interface FrameworkOptions {
   readonly config?: FrameworkConfigInput;
   readonly baseDirectory?: string;
   readonly embeddingProvider?: EmbeddingProvider;
+  readonly reconciliation?: "maintenance" | "projection";
   /** Wait for startup reconciliation before returning. Defaults to true. */
   readonly waitForStartup?: boolean;
   readonly onError?: (error: FrameworkError) => void;
@@ -170,6 +172,7 @@ export class ObjectFramework implements ObjectFacade {
     config: FrameworkConfig,
     registry: ObjectRegistry,
     provider: EmbeddingProvider | undefined,
+    private readonly reconciliation: "maintenance" | "projection",
     private readonly onError: (error: FrameworkError) => void,
   ) {
     this.config = config;
@@ -217,7 +220,13 @@ export class ObjectFramework implements ObjectFacade {
       options.embeddingProvider ?? (await createEmbeddingProvider(config.embeddings));
     let framework: ObjectFramework | undefined;
     try {
-      framework = new ObjectFramework(config, registry, provider, options.onError ?? (() => {}));
+      framework = new ObjectFramework(
+        config,
+        registry,
+        provider,
+        options.reconciliation ?? "maintenance",
+        options.onError ?? (() => {}),
+      );
       await framework.store.initialize();
       const started = framework;
       started.startupReconciliation = started.synchronization.start();
@@ -404,7 +413,7 @@ export class ObjectFramework implements ObjectFacade {
     type: string,
     options: { limit?: number; offset?: number } = {},
     signal?: AbortSignal,
-  ): Promise<{ objects: readonly ReadObject[]; total: number }> {
+  ): Promise<ObjectListResult> {
     return this.run(async (inner) => {
       const limit = options.limit ?? LIST_LIMIT_DEFAULT;
       const offset = options.offset ?? 0;
@@ -420,15 +429,31 @@ export class ObjectFramework implements ObjectFacade {
           `List limit must be 1..${LIST_LIMIT_MAX} and offset must be nonnegative integers.`,
         );
       const scan = await this.store.scan(type, inner);
-      if (!scan.complete)
-        throw new FrameworkError(
-          "SCAN",
-          "Object listing is incomplete because a directory cannot be read.",
-        );
+      const semanticCodes = new Set(["FRONTMATTER", "YAML", "VALIDATION"]);
+      const hasSourceOmission = scan.issues.some((i) => !semanticCodes.has(i.code));
+      const degraded = !scan.complete || scan.conflictedKeys.length > 0 || hasSourceOmission;
       const documents = [...scan.documents].sort((a, b) => a.object.id.localeCompare(b.object.id));
+      const observedCount = scan.documents.length;
+      const paginated = documents.slice(offset, offset + limit).map(publicObject);
+      const hasMore = offset + limit < observedCount;
+      const continuation = hasMore ? { offset: offset + limit } : null;
+      if (degraded) {
+        return {
+          objects: paginated,
+          complete: false,
+          total: null,
+          observedCount,
+          issues: scan.issues,
+          continuation,
+        };
+      }
       return {
-        objects: documents.slice(offset, offset + limit).map(publicObject),
-        total: documents.length,
+        objects: paginated,
+        total: observedCount,
+        complete: true,
+        observedCount,
+        issues: scan.issues,
+        continuation,
       };
     }, signal);
   }
@@ -613,7 +638,13 @@ export class ObjectFramework implements ObjectFacade {
         this.store.withProcessLock(async () => {
           const scan = await this.store.scan(undefined, signal);
           const result = reconcileSnapshot(
-            { entries: scan.documents, complete: scan.complete, invalidated: scan.conflictedKeys },
+            {
+              entries: scan.documents,
+              complete:
+                scan.complete &&
+                (this.reconciliation === "maintenance" || scan.issues.length === 0),
+              invalidated: scan.conflictedKeys,
+            },
             {
               key: (document) => document.key,
               upsert: (document) => this.index.upsertDocument(document),
@@ -625,6 +656,10 @@ export class ObjectFramework implements ObjectFacade {
           const documents: ReadDocument[] = [];
           const issues: SyncIssue[] = [...scan.issues];
           for (const document of scan.documents) {
+            if (this.reconciliation === "projection") {
+              documents.push(document);
+              continue;
+            }
             if (document.partial) {
               // Partial documents are not renamed or rewritten during resync.
               documents.push(document);
@@ -673,7 +708,7 @@ export class ObjectFramework implements ObjectFacade {
     const provider = this.provider;
     const fingerprint = this.fingerprint;
     const pending =
-      provider && fingerprint
+      this.reconciliation === "maintenance" && provider && fingerprint
         ? snapshot.scan.documents.filter((document) =>
             this.index.needsEmbeddings(document.key, document.checksum, fingerprint),
           )

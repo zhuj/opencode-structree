@@ -43,6 +43,23 @@ async function eventually(condition: () => boolean): Promise<void> {
   }
 }
 
+async function withDeadline<Value>(promise: Promise<Value>, timeoutMs = 3000): Promise<Value> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error("Timed out waiting for lifecycle recovery.")),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 function own<Report>(lifecycle: WatchLifecycle<Report>): WatchLifecycle<Report> {
   cleanup.push(() => lifecycle.shutdown());
   return lifecycle;
@@ -221,9 +238,79 @@ describe("reusable vault lifecycle", () => {
     expect(watcher.closed).toBe(true);
     expect(calls).toBe(0);
     lifecycle.requestResync();
+    watcher.change();
     await expect(lifecycle.resync()).rejects.toBeInstanceOf(WatchStoppedError);
+    expect(calls).toBe(0);
     await lifecycle.shutdown();
     expect(watcher.closeCalls).toBe(1);
+  });
+
+  test("initial reconciliation failure recovers explicitly and from a watcher event", async () => {
+    const watcher = new ManualWatcher();
+    const failure = new Error("Initial projection failed");
+    const eventRecovery = deferred<number>();
+    let calls = 0;
+    const lifecycle = own(
+      new WatchLifecycle(
+        async () => {
+          calls++;
+          if (calls === 1) throw failure;
+          return calls;
+        },
+        {
+          watcher,
+          debounceMs: 0,
+          rescanIntervalMs: 0,
+          onComplete: (report) => {
+            if (report === 3) eventRecovery.resolve(report);
+          },
+        },
+      ),
+    );
+
+    const startup = lifecycle.start();
+    await expect(startup).rejects.toBe(failure);
+    expect(lifecycle.start()).toBe(startup);
+    try {
+      expect(watcher.closed).toBe(false);
+      expect(await lifecycle.resync()).toBe(2);
+      watcher.change();
+      expect(await withDeadline(eventRecovery.promise)).toBe(3);
+      expect(calls).toBe(3);
+      expect(watcher.closed).toBe(false);
+      expect(lifecycle.start()).toBe(startup);
+      await expect(lifecycle.start()).rejects.toBe(failure);
+    } finally {
+      await lifecycle.shutdown();
+    }
+    expect(watcher.closeCalls).toBe(1);
+  });
+
+  test("periodic scheduling recovers an initial reconciliation failure", async () => {
+    const failure = new Error("Initial periodic projection failed");
+    const periodicRecovery = deferred<number>();
+    let calls = 0;
+    const lifecycle = own(
+      new WatchLifecycle(
+        async () => {
+          calls++;
+          if (calls === 1) throw failure;
+          return calls;
+        },
+        { rescanIntervalMs: 10, onComplete: (report) => periodicRecovery.resolve(report) },
+      ),
+    );
+    const startup = lifecycle.start();
+    await expect(startup).rejects.toBe(failure);
+    expect(lifecycle.start()).toBe(startup);
+    try {
+      expect(await withDeadline(periodicRecovery.promise)).toBe(2);
+      expect(calls).toBe(2);
+      expect(lifecycle.start()).toBe(startup);
+      await expect(lifecycle.start()).rejects.toBe(failure);
+    } finally {
+      await lifecycle.shutdown();
+    }
   });
 
   test("shutdown while readiness is pending releases startup without a reconciliation", async () => {

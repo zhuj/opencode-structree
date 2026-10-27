@@ -527,7 +527,15 @@ describe("independent instances and lifecycle", () => {
         message: "A subtree was unavailable",
       });
       expect(framework.status().objects).toBe(2);
-      await expect(framework.list("project")).rejects.toMatchObject({ code: "SCAN" });
+      const listing = await framework.list("project");
+      expect(listing.objects.map((object) => object.object.id)).toEqual([visible.object.id]);
+      expect(listing.complete).toBe(false);
+      expect(listing.total).toBeNull();
+      expect(listing.observedCount).toBe(1);
+      expect(
+        listing.issues?.some((issue) => issue.code === "DIRECTORY" && issue.path === unseen.path),
+      ).toBe(true);
+      expect(listing.continuation).toBeNull();
       expect(await readFile(path.join(root, unseen.path), "utf8")).toBe(original);
       expect(await readFile(path.join(root, visible.path), "utf8")).toContain("Visible content");
     } finally {

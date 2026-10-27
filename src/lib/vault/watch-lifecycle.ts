@@ -68,41 +68,52 @@ export class WatchLifecycle<Report> {
   start(): Promise<Report> {
     if (this.stopped) return Promise.reject(new WatchStoppedError());
     if (this.startPromise) return this.startPromise;
-    this.startPromise = this.initialize().catch(async (error: unknown) => {
-      this.stopped = true;
-      this.stopTimers();
-      await this.options.watcher?.close().catch(() => undefined);
-      throw error;
-    });
+    this.startPromise = this.initialize();
     return this.startPromise;
   }
 
   private async initialize(): Promise<Report> {
-    await this.options.watcher?.start({
-      onChange: (change) => {
-        if (this.stopped) return;
-        try {
-          this.options.onChange?.(change);
-        } catch (error) {
+    try {
+      await this.options.watcher?.start({
+        onChange: (change) => {
+          if (this.stopped) return;
+          try {
+            this.options.onChange?.(change);
+          } catch (error) {
+            this.reportError(error);
+          }
+          this.requestResync();
+        },
+        onError: (error) => {
+          if (this.stopped) return;
           this.reportError(error);
-        }
-        this.requestResync();
-      },
-      onError: (error) => {
-        if (this.stopped) return;
-        this.reportError(error);
-        this.requestResync();
-      },
-    });
+          this.requestResync();
+        },
+      });
+    } catch (error) {
+      this.stopped = true;
+      this.stopTimers();
+      await this.options.watcher?.close().catch(() => undefined);
+      throw error;
+    }
     this.ensureOpen();
     this.started = true;
-    const report = await this.resync();
-    this.ensureOpen();
-    if (this.rescanIntervalMs > 0) {
+    try {
+      const report = await this.resync();
+      this.ensureOpen();
+      this.startPeriodicResync();
+      return report;
+    } catch (error) {
+      if (!this.stopped) this.startPeriodicResync();
+      throw error;
+    }
+  }
+
+  private startPeriodicResync(): void {
+    if (this.rescanIntervalMs > 0 && !this.stopped && !this.periodic) {
       this.periodic = setInterval(() => this.requestPeriodicResync(), this.rescanIntervalMs);
       this.periodic.unref();
     }
-    return report;
   }
 
   /**

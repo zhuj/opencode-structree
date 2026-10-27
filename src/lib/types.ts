@@ -75,7 +75,9 @@ export interface PartialStoredObject {
   readonly identity: DocumentIdentity;
 }
 
-export type ReadObject = StoredObject | PartialStoredObject;
+export type ReadObject = (StoredObject | PartialStoredObject) & {
+  readonly assurance?: SourceIdentityAssurance;
+};
 
 export interface PartialSourceDocument extends PartialStoredObject {
   readonly json: JsonRecord;
@@ -251,13 +253,35 @@ export interface PartialSearchHit extends SearchCandidate {
 
 export type SearchHit = CompleteSearchHit | PartialSearchHit;
 
-export interface SearchResponse {
+export interface IndexedSearchResponse {
   readonly mode: SearchMode;
   readonly hits: readonly SearchHit[];
   readonly indexGeneration: number;
 }
 
-export interface SearchCandidateResponse extends Omit<SearchResponse, "hits"> {
+export interface SourceSearchResponse {
+  readonly mode: "source";
+  readonly requestedMode: SearchMode;
+  readonly hits: readonly SearchHit[];
+  readonly indexGeneration: null;
+  readonly complete: boolean;
+  readonly observedCount: number;
+  readonly issues: readonly SyncIssue[];
+  readonly recovery: {
+    readonly state: "degraded";
+    readonly code:
+      | "SOURCE_ONLY"
+      | "CAPABILITY_STARTING"
+      | "CAPABILITY_FAILED"
+      | "DERIVED_SEARCH_FAILED"
+      | "INDEX_NOT_READY"
+      | "SEMANTIC_INDEX_NOT_READY";
+  };
+}
+
+export type SearchResponse = IndexedSearchResponse | SourceSearchResponse;
+
+export interface SearchCandidateResponse extends Omit<IndexedSearchResponse, "hits"> {
   readonly hits: readonly SearchCandidate[];
 }
 
@@ -351,6 +375,13 @@ export interface SyncIssue {
   readonly code: string;
   readonly message: string;
 }
+
+export interface SourceIdentityAssurance {
+  readonly complete: false;
+  readonly identity: "unverified";
+  readonly issues: readonly SyncIssue[];
+}
+
 export interface SyncReport {
   readonly scanned: number;
   readonly indexed: number;
@@ -359,6 +390,26 @@ export interface SyncReport {
   readonly issues: readonly SyncIssue[];
   readonly generation: number;
 }
+
+export interface ObjectListComplete {
+  readonly objects: readonly ReadObject[];
+  readonly total: number;
+  readonly complete?: true;
+  readonly observedCount?: number;
+  readonly issues?: readonly SyncIssue[];
+  readonly continuation?: { readonly offset: number } | null;
+}
+
+export interface ObjectListIncomplete {
+  readonly objects: readonly ReadObject[];
+  readonly complete: false;
+  readonly total: null;
+  readonly observedCount: number;
+  readonly issues: readonly SyncIssue[];
+  readonly continuation: { readonly offset: number } | null;
+}
+
+export type ObjectListResult = ObjectListComplete | ObjectListIncomplete;
 
 export interface ObjectFacade {
   readonly definitions: readonly ObjectDefinition[];
@@ -384,7 +435,7 @@ export interface ObjectFacade {
     type: string,
     options?: { limit?: number; offset?: number },
     signal?: AbortSignal,
-  ): Promise<{ objects: readonly ReadObject[]; total: number }>;
+  ): Promise<ObjectListResult>;
   search(request: SearchRequest, signal?: AbortSignal): Promise<SearchResponse>;
   relations(request: RelationsRequest, signal?: AbortSignal): Promise<RelationsResponse>;
   resync(signal?: AbortSignal): Promise<SyncReport>;

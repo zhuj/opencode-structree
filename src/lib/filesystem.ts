@@ -2,7 +2,7 @@ import path from "node:path";
 import { isValidId } from "./base-schema.ts";
 import { FrameworkError } from "./errors.ts";
 import type { ObjectRegistry } from "./registry.ts";
-import { SqliteProcessLock } from "./sqlite/process-lock.ts";
+import type { SqliteProcessLock } from "./sqlite/process-lock.ts";
 import type {
   BaseObject,
   FrameworkConfig,
@@ -11,7 +11,8 @@ import type {
   SyncIssue,
 } from "./types.ts";
 import { MarkdownCodec } from "./vault/codec.ts";
-import { ConfinedFilesystem } from "./vault/confined-filesystem.ts";
+import { errorCode } from "./vault/confined-directory.ts";
+import { ConfinedFilesystem, type ReadBufferOperation } from "./vault/confined-filesystem.ts";
 import { type ValidVaultDocument, Vault, type VaultDocument } from "./vault/vault.ts";
 
 export { checksum } from "./vault/checksums.ts";
@@ -51,19 +52,34 @@ export interface ScanResult {
   readonly conflictedKeys: readonly string[];
 }
 
+export interface FileStoreOptions {
+  readonly access?: "read-only" | "read-write";
+  readonly readBuffer?: ReadBufferOperation;
+}
+
 /** Applies object identity rules to schema-independent vault documents. */
 export class FileStore {
   readonly files: ConfinedFilesystem;
   private readonly vaults = new Map<string, Vault<BaseObject>>();
+  private readonly readOnly: boolean;
   private coordination: SqliteProcessLock | undefined;
 
   constructor(
     readonly registry: ObjectRegistry,
     readonly config: FrameworkConfig,
+    options: FileStoreOptions = {},
   ) {
+    this.readOnly = options.access === "read-only";
+    if (options.readBuffer && !this.readOnly)
+      throw new FrameworkError(
+        "CONFIG",
+        "A custom read-buffer operation requires read-only access.",
+      );
     this.files = new ConfinedFilesystem(config.root, {
       maxFileBytes: config.sync.maxFileBytes,
       confinement: config.sync.confinement,
+      readOnly: this.readOnly,
+      ...(options.readBuffer ? { readBuffer: options.readBuffer } : {}),
     });
     for (const definition of registry.definitions) {
       const codec = new MarkdownCodec<BaseObject>(
@@ -98,9 +114,11 @@ export class FileStore {
 
   async initialize(): Promise<void> {
     await this.files.initialize();
+    if (this.readOnly) return;
     for (const definition of this.registry.definitions) {
       await this.files.ensureDirectory(definition.directory);
     }
+    const { SqliteProcessLock } = await import("./sqlite/process-lock.ts");
     this.coordination = await SqliteProcessLock.open({
       path: path.join(this.files.root, ".object-mcp-lock.sqlite"),
       driver: this.config.sqlite.driver,
@@ -175,6 +193,20 @@ export class FileStore {
     let complete = true;
     let scanned = 0;
     for (const definition of definitions) {
+      if (this.readOnly) {
+        try {
+          await this.files.ensureDirectory(definition.directory, false);
+        } catch (error) {
+          if (errorCode(error) === "ENOENT") {
+            complete = false;
+            issues.push({
+              path: definition.directory,
+              code: "DIRECTORY",
+              message: "Registered object directory is missing.",
+            });
+          }
+        }
+      }
       const result = await this.vault(definition.name).scan(definition.directory, signal);
       for (const document of result.documents)
         documents.push(this.source(definition.name, document));
@@ -234,6 +266,7 @@ export class FileStore {
     body = "",
     signal?: AbortSignal,
   ): Promise<SourceDocument> {
+    this.assertWritable();
     const definition = this.registry.get(type);
     const vault = this.vault(type);
     const element = vault.codec.serialize(value, body);
@@ -262,6 +295,7 @@ export class FileStore {
     expectedChecksum: string,
     signal?: AbortSignal,
   ): Promise<SourceDocument> {
+    this.assertWritable();
     const vault = this.vault(type);
     const element = vault.codec.serialize(value, body);
     const object = element.header;
@@ -289,6 +323,7 @@ export class FileStore {
     expectedChecksum: string,
     signal?: AbortSignal,
   ): Promise<void> {
+    this.assertWritable();
     const current = await this.get(type, id, signal);
     if (current.partial)
       throw new FrameworkError(
@@ -303,10 +338,15 @@ export class FileStore {
   }
 
   async withProcessLock<A>(work: () => Promise<A>, signal?: AbortSignal): Promise<A> {
+    this.assertWritable();
     const coordination = this.coordination;
     if (!coordination)
       throw new FrameworkError("CLOSED", "Filesystem coordination is not initialized.");
     return coordination.run(work, signal);
+  }
+
+  private assertWritable(): void {
+    if (this.readOnly) throw new FrameworkError("READ_ONLY", "Source filesystem is read-only.");
   }
 
   async close(): Promise<void> {

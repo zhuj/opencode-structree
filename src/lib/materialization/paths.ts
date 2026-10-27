@@ -42,6 +42,70 @@ export async function confinedPath(
 }
 export const missing = (cause: unknown): boolean =>
   cause !== null && typeof cause === "object" && "code" in cause && cause.code === "ENOENT";
+
+export class InspectionBudgetExceeded extends Error {
+  constructor() {
+    super("Output inspection budget exceeded.");
+  }
+}
+
+export interface InspectionBudget {
+  readonly maxFileBytes: number;
+  readonly maxTotalBytes: number;
+  readonly signal?: AbortSignal;
+  totalBytes: number;
+}
+
+export interface InspectionReadHandle {
+  stat(): Promise<{ isFile(): boolean; size: number }>;
+  read(
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number,
+  ): Promise<{ readonly bytesRead: number }>;
+}
+
+export async function readInspectionHandle(
+  handle: InspectionReadHandle,
+  budget: InspectionBudget,
+): Promise<string> {
+  const initial = await handle.stat();
+  const allowed = Math.min(budget.maxFileBytes, budget.maxTotalBytes - budget.totalBytes);
+  if (!initial.isFile() || initial.size > allowed) throw new InspectionBudgetExceeded();
+  const parts: Uint8Array[] = [];
+  let bytesRead = 0;
+  while (true) {
+    budget.signal?.throwIfAborted();
+    const current = await handle.stat();
+    if (!current.isFile() || current.size > allowed) throw new InspectionBudgetExceeded();
+    if (bytesRead === allowed) break;
+    const buffer = new Uint8Array(Math.min(65_536, allowed - bytesRead));
+    const read = await handle.read(buffer, 0, buffer.length, bytesRead);
+    if (read.bytesRead === 0) break;
+    parts.push(buffer.subarray(0, read.bytesRead));
+    bytesRead += read.bytesRead;
+    budget.totalBytes += read.bytesRead;
+  }
+  budget.signal?.throwIfAborted();
+  const final = await handle.stat();
+  if (!final.isFile() || final.size > allowed || final.size !== bytesRead)
+    throw new InspectionBudgetExceeded();
+  return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(Buffer.concat(parts));
+}
+
+export async function readInspectionFile(file: string, budget: InspectionBudget): Promise<string> {
+  const handle = await fs.open(
+    file,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+  );
+  try {
+    return await readInspectionHandle(handle, budget);
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function readOptional(file: string): Promise<string | null> {
   try {
     return await fs.readFile(file, "utf8");
