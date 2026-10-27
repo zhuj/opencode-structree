@@ -1,5 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readlink,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaultConfig, LOCAL_STATE_RELATIVE_DIRECTORY } from "../src/lib/config.ts";
@@ -110,6 +121,9 @@ describe("MCP startup directory bootstrap", () => {
         expect((await stat(state)).isDirectory()).toBe(true);
         expect((await stat(objects)).isDirectory()).toBe(true);
         expect(await Bun.file(path.join(state, "config.yaml")).exists()).toBe(false);
+        expect(await readFile(path.join(state, ".gitignore"), "utf8")).toBe(
+          "/cache/\n/.cache/\n/objects/.object-mcp-lock.sqlite*\n",
+        );
       });
       const preserved = path.join(state, "preserved.bin");
       const bytes = new Uint8Array([0, 10, 255, 13, 42]);
@@ -119,6 +133,86 @@ describe("MCP startup directory bootstrap", () => {
       });
     });
   });
+
+  test("generated rules ignore caches and lock sidecars but preserve source objects", async () => {
+    await workspace(async (directory) => {
+      const config = await configuration(directory, defaultConfig.root);
+      await initialize(directory, config, async () => {});
+      const git = async (args: string[]) => {
+        const child = Bun.spawn(["git", ...args], {
+          cwd: directory,
+          env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const [code, stdout, stderr] = await Promise.all([
+          child.exited,
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+        ]);
+        expect(stderr).toBe("");
+        expect(code).toBe(0);
+        return stdout;
+      };
+      await git(["init", "--quiet"]);
+      const state = LOCAL_STATE_RELATIVE_DIRECTORY;
+      const ignored = [
+        "cache/nested/data.sqlite",
+        ".cache/nested/data.sqlite",
+        "objects/.object-mcp-lock.sqlite",
+        "objects/.object-mcp-lock.sqlite-wal",
+        "objects/.object-mcp-lock.sqlite-shm",
+        "objects/.object-mcp-lock.sqlite-journal",
+      ].map((filename) => `${state}/${filename}`);
+      const result = await git([
+        "-c",
+        "core.excludesFile=/dev/null",
+        "check-ignore",
+        "--no-index",
+        "--",
+        ...ignored,
+        `${state}/objects/foo.md`,
+      ]);
+      expect(result.trim().split("\n")).toEqual(ignored);
+    });
+  });
+
+  for (const content of ["custom rule\r\n!keep\n", ""]) {
+    test(`preserves an existing ${content ? "custom" : "empty"} gitignore on restart`, async () => {
+      await workspace(async (directory) => {
+        const state = path.join(directory, LOCAL_STATE_RELATIVE_DIRECTORY);
+        await mkdir(state, { recursive: true });
+        const filename = path.join(state, ".gitignore");
+        const bytes = new TextEncoder().encode(content);
+        await writeFile(filename, bytes);
+        const config = await configuration(directory, defaultConfig.root);
+        for (let attempt = 0; attempt < 2; attempt++) {
+          await initialize(directory, config, async () => {
+            expect(new Uint8Array(await readFile(filename))).toEqual(bytes);
+          });
+        }
+      });
+    });
+  }
+
+  for (const kind of ["symlink", "directory"]) {
+    test(`preserves an existing gitignore ${kind}`, async () => {
+      await workspace(async (directory) => {
+        const state = path.join(directory, LOCAL_STATE_RELATIVE_DIRECTORY);
+        await mkdir(state, { recursive: true });
+        const filename = path.join(state, ".gitignore");
+        if (kind === "symlink") await symlink("missing-target", filename);
+        else await mkdir(filename);
+        const config = await configuration(directory, defaultConfig.root);
+        await initialize(directory, config, async () => {
+          if (kind === "symlink") {
+            expect((await lstat(filename)).isSymbolicLink()).toBe(true);
+            expect(await readlink(filename)).toBe("missing-target");
+          } else expect((await stat(filename)).isDirectory()).toBe(true);
+        });
+      });
+    });
+  }
 
   test("creates state with a custom existing root even when optional cache startup fails", async () => {
     await workspace(async (directory) => {
@@ -154,6 +248,19 @@ describe("MCP startup directory bootstrap", () => {
       await expect(stat(path.join(directory, defaultConfig.root))).rejects.toThrow();
     });
   });
+
+  for (const command of ["status", "sync", "validate"]) {
+    test(`${command} does not create a gitignore`, async () => {
+      await workspace(async (directory) => {
+        const config = await configuration(directory, defaultConfig.root);
+        const result = await runCli(directory, [command, "--config", config]);
+        expect(result.code).toBe(command === "validate" ? 2 : 0);
+        await expect(
+          stat(path.join(directory, LOCAL_STATE_RELATIVE_DIRECTORY, ".gitignore")),
+        ).rejects.toThrow();
+      });
+    });
+  }
 
   for (const args of [["help"], ["serve", "--config"], ["unknown"], ["doctor", "--help"]]) {
     test(`${args.join(" ")} does not create local state`, async () => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { StdioServerTransport, serveStdio } from "@modelcontextprotocol/server/stdio";
 import { GRAPH_COMMAND_USAGE, isGraphCommand, runGraphCommand } from "./graph-tools-cli.ts";
@@ -52,7 +52,23 @@ async function main(): Promise<void> {
     ? parseCommandOptions(command, tail)
     : { configFile: tail[1], outputDirectory: undefined, check: false };
   if (command === "serve") {
-    await mkdir(path.resolve(process.cwd(), LOCAL_STATE_RELATIVE_DIRECTORY), { recursive: true });
+    const state = path.resolve(process.cwd(), LOCAL_STATE_RELATIVE_DIRECTORY);
+    await mkdir(state, { recursive: true });
+    try {
+      await writeFile(
+        path.join(state, ".gitignore"),
+        "/cache/\n/.cache/\n/objects/.object-mcp-lock.sqlite*\n",
+        { flag: "wx" },
+      );
+    } catch (error) {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        !("code" in error) ||
+        error.code !== "EEXIST"
+      )
+        throw error;
+    }
   }
   const config =
     options.configFile === undefined

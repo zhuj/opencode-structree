@@ -262,6 +262,11 @@ The application `serve` command creates cwd-relative `.local/.structree` before
 loading configuration, and creates `.local/.structree/objects` when that exact
 default source root is selected. This explicit startup bootstrap is idempotent;
 it does not write a configuration file or create a missing custom source root.
+If the state directory has no `.gitignore`, startup creates one exclusively with
+`/cache/`, `/.cache/` (the current default cache directory), and
+`/objects/.object-mcp-lock.sqlite*` ignored. Existing `.gitignore` contents,
+including an empty file, are left unchanged; startup never appends or replaces
+user rules. Other write failures are reported rather than silently ignored.
 Library source-root opening, doctor and independent recovery remain noncreating.
 Broken config/registry/MCP loading still uses the independent recovery CLI rather
 than a guessed root.
