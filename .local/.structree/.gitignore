@@ -1,0 +1,4 @@
+/cache/
+/.cache/
+/.materialized/
+/objects/.object-mcp-lock.sqlite*
