@@ -86,19 +86,18 @@ export async function createExample(
         type: "interface",
         id: "interface-login",
         relations: { dependsOn: ["service-auth"], justifiedBy: ["criterion-login"] },
-        metadata:
+        metadata: {},
+        fileBindings:
           options.fault === "unbound-interface"
-            ? {}
-            : {
-                fileBindings: [
-                  {
-                    root: "project",
-                    path: "src/login.ts",
-                    role: "implementation",
-                    symbol: "login",
-                  },
-                ],
-              },
+            ? []
+            : [
+                {
+                  root: "project",
+                  path: "src/login.ts",
+                  role: "implementation",
+                  symbol: "login",
+                },
+              ],
       },
       { type: "service", id: "service-auth", relations: {}, metadata: {} },
     ];
@@ -120,6 +119,7 @@ export async function createExample(
             : null,
         tags: {},
         metadata: record.metadata,
+        ...("fileBindings" in record ? { fileBindings: record.fileBindings } : {}),
         relations: record.relations,
       };
       await writeFile(

@@ -85,7 +85,7 @@ export async function validationSnapshot(options: ValidationOptions): Promise<Va
       }
       let bindings: Awaited<ReturnType<typeof fileBindings>> = [];
       try {
-        bindings = await fileBindings(header.metadata, projectRoot, options.signal);
+        bindings = await fileBindings(header, projectRoot, options.signal);
         options.signal?.throwIfAborted();
       } catch (cause) {
         options.signal?.throwIfAborted();
@@ -93,7 +93,7 @@ export async function validationSnapshot(options: ValidationOptions): Promise<Va
           code: "FILE_BINDING",
           severity: "error",
           path: document.path,
-          field: "metadata.fileBindings",
+          field: "fileBindings",
           object: ref,
           message: cause instanceof Error ? cause.message : "Invalid project file binding.",
         });

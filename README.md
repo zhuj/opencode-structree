@@ -4,6 +4,8 @@ A Bun/TypeScript framework that turns an **Effect-schema object registry** into 
 
 The package includes the 12 requested schemas, a standalone stdio server, and a facade that can attach tools to an existing plugin server. It has no application-level Zod schemas. Effect defines the domain, persistence codecs, configuration validation, and MCP JSON schemas; Effect also owns the runtime and in-process serialization.
 
+The built-in schemas keep `metadata` general-purpose JSON. Optional top-level fields hold file bindings, evidence, review histories, and ADR-only decisions, with focused checksum-guarded MCP tools. See [structured object fields](docs/object-fields.md).
+
 The SQLite cache uses the supplied `Database`, `Table`, `IndexedTable`, FTS, vector, and prepared-mutation abstractions, adapted to Effect and the existing cache format. Biome provides formatting, recommended lint checks, and import organization.
 
 Generated MCP tools include the supplied relaxed JSON parser's mechanisms adapted to Effect. They repair unambiguous field spelling, misplaced nesting, stringified containers, and selected scalar representations, then require the original strict schema to validate the complete arguments before a handler runs. Canonical tool schemas and outputs remain strict. See [relaxed JSON and MCP arguments](docs/relaxed-json.md).
@@ -250,7 +252,7 @@ explicit id and a current checksum. Repair its source explicitly before mutation
 
 ## The 12 schemas and their tools
 
-Every registration produces `_create`, `_get`, `_update`, `_delete`, and `_list` tools. The built-in registry therefore exposes **60 entity tools plus five shared tools**, for **65 tools** total.
+Every registration produces `_create`, `_get`, `_update`, `_delete`, and `_list` tools. With the built-in registry, the generic library exposes **60 entity tools plus five shared tools**, for **65 tools** total. The application adapter adds `objects_fields_get` and `objects_fields_update` for **67 tools**; CLI serve adds six host tools for **73 tools**. Structree field schemas, types, and registration policy live outside `src/lib`.
 
 | Schema | Registry/tool prefix | Directory |
 | --- | --- | --- |

@@ -20,13 +20,13 @@ import { createFramework, type FrameworkEvent, type ObjectFramework } from "../s
 import { BaseObjectSchema } from "../src/lib/base-schema.ts";
 import { FrameworkError } from "../src/lib/errors.ts";
 import type { FileStore } from "../src/lib/filesystem.ts";
-import { createMcpServer } from "../src/lib/mcp.ts";
 import {
   type EmbeddingProvider,
   type ObjectDefinition,
   STATUS_ISSUE_LIMIT,
   type StoredObject,
 } from "../src/lib/types.ts";
+import { createMcpServer } from "../src/mcp.ts";
 import { coreDefinitions, ObjectRegistry } from "../src/registry.ts";
 
 const tempDirs: string[] = [];
@@ -1016,7 +1016,7 @@ describe("filesystem-authoritative framework", () => {
       }),
     );
     try {
-      expect((await client.listTools()).tools).toHaveLength(65);
+      expect((await client.listTools()).tools).toHaveLength(67);
       const registry = new ObjectRegistry(coreDefinitions);
       const created = await client.callTool({
         name: "project_create",

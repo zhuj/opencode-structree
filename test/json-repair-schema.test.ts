@@ -32,7 +32,8 @@ describe("Effect JSON repair shapes", () => {
   test("preserves required nullable fields and leaves tag and metadata maps opaque", () => {
     const project = objectShape(shape(ProjectSchema));
     expect(project.additionalProperties).toBe(false);
-    for (const property of Object.values(project.properties)) expect(property.optional).toBe(false);
+    for (const [key, property] of Object.entries(project.properties))
+      expect(property.optional).toBe(["fileBindings", "evidences", "reviews"].includes(key));
     expect(resolveRepairShape(project.properties.createdAt!.shape)).toEqual({
       kind: "scalar",
       type: "string",

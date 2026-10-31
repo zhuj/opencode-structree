@@ -97,9 +97,7 @@ for (const change of ["removed", "symlinked"] as const) {
       const bound = path.join(f.projectRoot, "src", "api.ts");
       await writeFile(bound, "export const api = 1;\n");
       await f.write("a", {
-        metadata: {
-          fileBindings: [{ root: "project", path: "src/api.ts", role: "implementation" }],
-        },
+        fileBindings: [{ root: "project", path: "src/api.ts", role: "implementation" }],
       });
       const snapshot = await validationSnapshot(f);
       expect(snapshot.result.valid).toBe(true);

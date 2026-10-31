@@ -9,12 +9,10 @@ test("checks only explicit file bindings, rejecting traversal, missing files and
   try {
     await writeFile(path.join(f.projectRoot, "implementation.ts"), "export const value = 1;\n");
     await f.write("a", {
-      metadata: {
-        arbitrary: "../../not-a-binding",
-        fileBindings: [
-          { root: "project", path: "implementation.ts", role: "implementation", symbol: "value" },
-        ],
-      },
+      metadata: { arbitrary: "../../not-a-binding", fileBindings: "opaque" },
+      fileBindings: [
+        { root: "project", path: "implementation.ts", role: "implementation", symbol: "value" },
+      ],
     });
     const valid = await validateObjects(f);
     expect(valid.valid).toBe(true);
@@ -26,14 +24,14 @@ test("checks only explicit file bindings, rejecting traversal, missing files and
           path.join(f.projectRoot, file),
         );
       await f.write("a", {
-        metadata: { fileBindings: [{ root: "project", path: file, role: "test" }] },
+        fileBindings: [{ root: "project", path: file, role: "test" }],
       });
       const result = await validateObjects(f);
       expect(result.diagnostics).toContainEqual(
         expect.objectContaining({
           code: "FILE_BINDING",
           path: "notes/a.md",
-          field: "metadata.fileBindings",
+          field: "fileBindings",
         }),
       );
     }

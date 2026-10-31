@@ -5,12 +5,6 @@ import { Schema } from "effect";
 import { defineConfig } from "../src/lib/config.ts";
 import { FrameworkError } from "../src/lib/errors";
 import { objectKey } from "../src/lib/filesystem.ts";
-import {
-  createMcpServer,
-  effectMcpSchema,
-  type McpToolOptions,
-  registerObjectTools,
-} from "../src/lib/mcp";
 import type {
   FrameworkConfig,
   ObjectFacade,
@@ -22,6 +16,12 @@ import type {
   StoredObject,
   SyncReport,
 } from "../src/lib/types";
+import {
+  createMcpServer,
+  effectMcpSchema,
+  type McpToolOptions,
+  registerObjectTools,
+} from "../src/mcp.ts";
 import { coreDefinitions, createCoreRegistry } from "../src/registry";
 
 const projectJson = () => ({
@@ -306,7 +306,7 @@ describe("official MCP adapter", () => {
     });
     await connected(async (client) => {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(65);
+      expect(tools).toHaveLength(67);
       const search = tools.find((tool) => tool.name === "objects_search")!;
       for (const branch of [0, 1]) {
         const prefix = `anyOf.0.properties.hits.items.anyOf.${branch}`;
@@ -406,7 +406,7 @@ describe("official MCP adapter", () => {
     await connected(
       async (client) => {
         const { tools } = await client.listTools();
-        expect(tools).toHaveLength(66);
+        expect(tools).toHaveLength(68);
         expect(tools.some((tool) => tool.name === "host_ping")).toBe(true);
         expect(tools.some((tool) => tool.name === "project_create")).toBe(true);
         expect(tools.some((tool) => tool.name === "objects_search")).toBe(true);
@@ -434,10 +434,10 @@ describe("official MCP adapter", () => {
     expect(facade.closed).toBe(0);
   });
 
-  test("advertises all 65 tools with schema-derived required fields and optional wrapper keys", async () => {
+  test("advertises all 67 tools with schema-derived required fields and optional wrapper keys", async () => {
     await connected(async (client) => {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(65);
+      expect(tools).toHaveLength(67);
       for (const definition of coreDefinitions) {
         for (const operation of ["create", "get", "update", "delete", "list"]) {
           expect(tools.some((tool) => tool.name === `${definition.name}_${operation}`)).toBe(true);

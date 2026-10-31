@@ -1,5 +1,6 @@
 import { ObjectRegistry } from "./lib/registry.ts";
-import type { ObjectDefinition, RelationDescriptor } from "./lib/types.ts";
+import type { RelationDescriptor } from "./lib/types.ts";
+import type { ObjectFieldsDefinition } from "./object-fields/types.ts";
 import {
   AcceptanceTestSchema,
   ADRSchema,
@@ -104,7 +105,7 @@ const RELATIONS: Readonly<Record<string, readonly RelationDescriptor[]>> = {
   ],
 };
 
-export const coreDefinitions: readonly ObjectDefinition[] = Object.freeze(
+export const coreDefinitions: readonly ObjectFieldsDefinition[] = Object.freeze(
   [
     {
       name: "project",
@@ -180,9 +181,11 @@ export const coreDefinitions: readonly ObjectDefinition[] = Object.freeze(
     },
   ].map((definition) => {
     const relations = RELATIONS[definition.name];
-    return Object.freeze(
-      relations === undefined ? { ...definition } : { ...definition, relations },
-    );
+    return Object.freeze({
+      ...definition,
+      fieldsProfile: definition.name === "adr" ? "adr" : "common",
+      ...(relations === undefined ? {} : { relations }),
+    });
   }),
 );
 

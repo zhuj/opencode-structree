@@ -13,7 +13,7 @@ the schema, including the ones that are empty.
 | `updatedAt` | string | ISO timestamp. Set by the caller, moves forward on update. |
 | `retiredAt` | string or null | Retirement timestamp, or null for an active object. A retired object is still listed and searchable; check this field to exclude it. |
 | `tags` | object of string to string | Free-form labels. |
-| `metadata` | object | Additional JSON-compatible values. |
+| `metadata` | object | Arbitrary JSON-compatible values, with no reserved keys. |
 | `relations` | object | The edges, shaped per type. See below. |
 
 The body is the Markdown content of the object. It is separate from
@@ -40,6 +40,79 @@ An id read from a file is checked as written. A hand-written file whose
 frontmatter id is not lowercase is an invalid object reported as a scan issue,
 not normalized. The framework normalizes what it writes but reports what a human
 wrote rather than rewriting authoritative file content.
+
+## Structured fields
+
+The fields below are optional top-level siblings of `metadata` and `relations`.
+Once present, their nested fields are validated and unknown child fields are
+rejected. `metadata` remains general-purpose JSON on every object, including
+keys that resemble these fields. Keep existing metadata and legacy keys such as
+`reviewedHead`, `reviewedAt`, `decisionDate`, and `execution` unchanged unless
+explicitly updating their established meaning. Never silently migrate values
+out of metadata or infer a top-level field from them.
+
+| Field | Shape | Scope |
+| --- | --- | --- |
+| `fileBindings` | `{ root: "project", path, role, symbol? }[]` | All built-in types |
+| `evidences` | `{ id, kind, source, description, recordedAt? }[]` | All built-in types |
+| `reviews` | `{ id, reviewedAt, scope, limitations, workingTree, commit? }[]` | All built-in types |
+| `decision` | `{ status, decidedAt?, source? }` | Typed only on ADRs |
+
+An evidence `source` or decision `source` is
+`{ root: "project", path: string, locator?: string }`. Paths are project-relative
+without absolute prefixes, backslashes, control characters, empty segments, or
+`.`/`..` segments. `locator` can name a section, symbol, or line. Historical
+citations need not exist today; CRUD never opens them. Do not invent a file path
+to represent an unsaved conversation. Quote the relevant conversation outcome
+and its known provenance in the body instead, without fabricating an evidence
+source. If a real project-local progress/transcript file records it, cite that.
+
+File-binding roles are `implementation`, `test`, or `documentation`. Normal CRUD
+validates structure; materialization additionally requires confined existing
+regular files. Unlike historical evidence, bindings describe current attachments.
+An optional `symbol` is a label, not a resolved symbol guarantee.
+Only top-level `fileBindings` produces derived attachments. A legacy
+`metadata.fileBindings` value is opaque, even when it looks like a binding list.
+
+Evidence kinds are `source`, `test-result`, `owner-decision`, and `documentation`.
+Describe what the citation supports and its limitations. A `test-result` kind
+does not itself assert pass, freshness, completeness, or execution authorization.
+
+Review `scope` and `limitations` are string arrays; `workingTree` is `clean`,
+`dirty`, or `unknown`. Use `unknown` when not inspected. Omit `commit` unless
+known, and do not present a commit as the complete state of a dirty tree.
+Review history records scoped observations, not a global verified flag.
+
+Evidence/review IDs match `^[A-Za-z0-9][A-Za-z0-9._-]*$`, retain case, and are
+unique within their own array. Preserve IDs and earlier entries when adding
+history. `recordedAt`, `reviewedAt`, and `decidedAt` use RFC3339 with timezone and
+valid calendar dates. Do not substitute record creation/update time for an
+unknown decision or historical execution time.
+
+### Decision statuses
+
+| Status | Record when |
+| --- | --- |
+| `proposed` | A concrete candidate is under consideration, not approved. |
+| `accepted` | The authorized owner explicitly accepted it or inspected evidence establishes an already accepted decision. |
+| `rejected` | The candidate was explicitly declined. |
+| `superseded` | A confirmed replacement has displaced the decision; explain and link that replacement in the body. |
+| `withdrawn` | The decision or proposal was explicitly retracted without claiming a replacement. |
+
+These labels are authored decision fields, not an enforced transition machine. Keep
+the reason and approval evidence in the body or a real source citation. An
+ambiguous answer does not authorize a status transition. Accepted does not mean
+implemented or tested; superseded does not create a new graph edge. Non-ADRs do
+not accept a top-level `decision`. Any `metadata.decision` remains opaque JSON
+on every type and is omitted by focused field reads.
+
+There is no shared implementation/task status enum for other types. Reuse a
+verified project convention such as `tags.status` only with its established
+meaning; otherwise describe proposed, implemented, verified, blocked, or canceled
+state precisely in the body. Never invent top-level `status` or put those values
+in `decision.status`. `retiredAt` is separate from decision status and
+does not delete the record; do not retire objects merely because work completed
+or a decision changed.
 
 ## Relation shapes
 

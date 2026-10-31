@@ -1,23 +1,17 @@
-import { type CallToolResult, McpServer } from "@modelcontextprotocol/server";
+import { McpServer } from "@modelcontextprotocol/server";
 import { Schema } from "effect";
-import { defaultConfig, McpInputRepairConfigSchema } from "./config.ts";
-import { FrameworkError } from "./errors";
-import { createMcpInputBoundary, effectMcpSchema } from "./mcp-input.ts";
-import { ObjectRegistry } from "./registry";
+import { defaultConfig } from "./config.ts";
+import { effectMcpSchema } from "./mcp-input.ts";
+import { createMcpToolContext, type McpToolOptions } from "./mcp-tool-context.ts";
 import {
   LIST_LIMIT_DEFAULT,
   LIST_LIMIT_MAX,
-  type McpInputRepairConfig,
   type ObjectFacade,
   RELATIONS_DEPTH_MAX,
-  type ReadObject,
 } from "./types";
 
 export { effectMcpSchema } from "./mcp-input.ts";
-
-export interface McpToolOptions {
-  readonly inputRepair?: Partial<McpInputRepairConfig>;
-}
+export type { McpToolOptions } from "./mcp-tool-context.ts";
 
 const IdInput = Schema.Struct({
   id: Schema.NonEmptyString.annotate({
@@ -331,71 +325,13 @@ const readOnly = {
 /** The per-type tools repeat the workflow contract so a caller never needs another tool to use them. */
 const WORKFLOW_CLAUSE = "See objects_definitions for the object model and workflow.";
 
-function success(structuredContent: Record<string, unknown>): CallToolResult {
-  return {
-    content: [{ type: "text", text: JSON.stringify(structuredContent) }],
-    structuredContent,
-  };
-}
-
-async function result(
-  operation: () => Promise<Record<string, unknown>> | Record<string, unknown>,
-): Promise<CallToolResult> {
-  try {
-    return success(await operation());
-  } catch (cause) {
-    const error =
-      cause instanceof FrameworkError
-        ? { code: cause.code, message: cause.message, details: cause.details }
-        : cause instanceof Error && cause.name === "AbortError"
-          ? { code: "CANCELLED", message: "The request was cancelled.", details: {} }
-          : { code: "INTERNAL", message: "Tool execution failed.", details: {} };
-    const structuredContent = { error };
-    return { ...success(structuredContent), isError: true };
-  }
-}
-
 /** The host owns the facade lifetime and reserves the generated tool names. */
 export function registerObjectTools(
   server: McpServer,
   facade: ObjectFacade,
   options: McpToolOptions = {},
 ): void {
-  let repairConfig: McpInputRepairConfig;
-  try {
-    if (
-      options.inputRepair !== undefined &&
-      (typeof options.inputRepair !== "object" ||
-        options.inputRepair === null ||
-        Array.isArray(options.inputRepair))
-    ) {
-      throw new TypeError("inputRepair must be an options object.");
-    }
-    repairConfig = Schema.decodeUnknownSync(McpInputRepairConfigSchema, {
-      onExcessProperty: "error",
-    })({
-      ...defaultConfig.mcp.inputRepair,
-      ...facade.config?.mcp.inputRepair,
-      ...options.inputRepair,
-    });
-  } catch (cause) {
-    throw new FrameworkError("CONFIG", "Invalid MCP input repair options.", {}, { cause });
-  }
-  const input = createMcpInputBoundary(repairConfig);
-  const toolResult = async (
-    args: object,
-    operation: () => Promise<Record<string, unknown>> | Record<string, unknown>,
-  ): Promise<CallToolResult> => {
-    const repairs = input.takeRepairs(args);
-    const response = await result(operation);
-    return repairs?.length
-      ? {
-          ...response,
-          _meta: { ...response._meta, "object-mcp/input-repair": { repairs } },
-        }
-      : response;
-  };
-  const registry = new ObjectRegistry(facade.definitions);
+  const { input, toolResult, registry, encodeStored } = createMcpToolContext(facade, options);
   const configuredSearch = facade.config?.search;
   const effectiveSearch: EffectiveSearch = {
     maxTopN: configuredSearch?.maxTopN ?? defaultConfig.search.maxTopN,
@@ -409,30 +345,6 @@ export function registerObjectTools(
     effectiveSearch,
     registry.definitions.map((definition) => definition.name),
   );
-  const encodeStored = (stored: ReadObject, includeBody = true): Record<string, unknown> => {
-    if (stored.partial) {
-      return {
-        partial: true,
-        type: stored.type,
-        object: stored.object,
-        ...(includeBody ? { body: stored.body, raw: stored.raw } : {}),
-        path: stored.path,
-        checksum: stored.checksum,
-        issues: stored.issues,
-        identity: stored.identity,
-        ...(stored.assurance === undefined ? {} : { assurance: stored.assurance }),
-      };
-    }
-    return {
-      type: stored.type,
-      object: registry.encode(stored.type, stored.object),
-      ...(includeBody ? { body: stored.body } : {}),
-      path: stored.path,
-      checksum: stored.checksum,
-      ...(stored.assurance === undefined ? {} : { assurance: stored.assurance }),
-    };
-  };
-
   for (const definition of registry.definitions) {
     const storedSchema = Schema.Struct({
       type: Schema.Literal(definition.name),

@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { ADRObjectFieldsSchema } from "../object-fields/schemas.ts";
 import { BaseObjectSchema, idSchema } from "./base";
 import { ScenarioIDSchema } from "./scenario";
 
@@ -7,6 +8,7 @@ export const ADRIDSchema = idSchema(
 );
 export const ADRSchema = Schema.Struct({
   ...BaseObjectSchema.fields,
+  ...ADRObjectFieldsSchema.fields,
   relations: Schema.Struct({
     commitment: Schema.Struct({
       scenarios: Schema.Array(ScenarioIDSchema).annotate({

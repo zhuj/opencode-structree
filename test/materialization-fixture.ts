@@ -14,6 +14,8 @@ export const definitions: readonly ObjectDefinition[] = [
     description: "Notes",
     schema: Schema.Struct({
       ...BaseObjectSchema.fields,
+      // Keep malformed declarations visible to the generic materialization binding validator.
+      fileBindings: Schema.optionalKey(Schema.Unknown),
       relations: Schema.Struct({
         parent: Schema.NullOr(Schema.String),
         depends: Schema.Array(Schema.String),

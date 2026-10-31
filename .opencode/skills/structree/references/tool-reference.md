@@ -1,7 +1,11 @@
 # Tool reference
 
-The server registers 65 tools: five verbs for each of the twelve object types,
-plus five global tools.
+The current application server exposes 73 tools: 60 per-type CRUD/list tools,
+five generic globals, two application field tools, and six host tools for
+validation, materialization, diagnosis, and repair. Structured field tools and their
+Structree schema/profile policy belong to the application adapter, not the
+generic library. Host tools are optional. Discover the connected inventory
+instead of assuming a fixed count.
 
 In code mode they are namespaced (`tools.structree.project_get`); on the wire the
 name is `project_get`, and a host that prefixes local MCP tools presents it as
@@ -87,6 +91,59 @@ bulk of a listing, so dropping them is the cheapest way to reduce a list to a
 manageable size.
 
 ## The global tools
+
+### `objects_fields_get`
+
+Read the current source revision's present supported top-level fields, not
+metadata. Input is `{ type, id }`; `type` must be an advertised supported type.
+Returns `{ type, id, checksum, fields }`, containing only the supported fields
+actually present. No defaults, decision status, freshness, or test success is
+inferred. `decision` is returned only for ADR-profile definitions. Use the normal
+per-type get for the complete object/body and legacy/custom metadata.
+
+### `objects_fields_update`
+
+| Parameter | Type | Meaning |
+| --- | --- | --- |
+| `type` | supported type name | Built-in types opt in; custom hosts choose support explicitly. |
+| `id` | string | Existing object identifier. |
+| `expectedChecksum` | nonempty string | Current revision checksum from a source read. |
+| `updatedAt` | RFC3339 string | Caller-authored timestamp with timezone. |
+| `fileBindings` | optional array | Replace the entire binding list; `[]` clears. |
+| `evidences` | optional array | Replace the entire evidence list; `[]` clears. |
+| `reviews` | optional array | Replace the entire review list; `[]` clears. |
+| `decision` | optional object or null | ADR-only replacement; `null` removes the block. |
+
+At least one supported top-level field is required. Omitted fields retain their values.
+Structures are defined in [the object model](object-model.md#structured-fields).
+To append history, read first and supply the old array plus the new entry,
+preserving IDs; there is no append or merge operation. A supplied `decision`
+also replaces the complete block: preserve its source and other still-applicable
+fields intentionally. Example for an ADR with no existing top-level decision,
+after reading its current checksum:
+
+```json
+{
+  "type": "adr",
+  "id": "adr-example",
+  "expectedChecksum": "<current-checksum>",
+  "updatedAt": "2026-10-31T20:00:00Z",
+  "decision": { "status": "accepted" }
+}
+```
+
+Returns the standard `{ type, object, body, path, checksum }` stored revision.
+All metadata, identity, creation time, relations and body are preserved.
+A stale checksum is refused with `CHECKSUM_CONFLICT`. On conflict, reread and
+reconcile the intended delta with the latest arrays rather than blindly
+resending a stale replacement. Partial sources fail with `VALIDATION_ERROR`;
+do not use these tools as repair or overwrite recovered fields as complete.
+Decision edits on non-ADR-profile definitions fail. Structured child fields remain
+strict; metadata has no reserved keys and is never interpreted by these tools.
+
+For semantic changes that also alter rationale, links, or relations, read the
+complete object and use one per-type update with the top-level fields and body changed.
+The focused tool does not update prose or dual-authored links automatically.
 
 ### `objects_search`
 

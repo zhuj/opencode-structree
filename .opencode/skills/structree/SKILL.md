@@ -1,6 +1,6 @@
 ---
 name: structree
-description: "Read and write the project's structured knowledge vault through the structree MCP server: projects, goals, features, scenarios, acceptance criteria, ADRs, contracts, interfaces, entities and the three test kinds, stored as typed Markdown objects with relations between them. Use this whenever the answer depends on what the project already knows or decided (what is in the vault for X, which criteria cover Y, what was decided about Z, what does this interface or contract guarantee, which test proves this, what breaks if that decision changes, which decisions to review if that scenario changes), whenever you are about to write a decision, requirement or test that might duplicate something already recorded, and whenever the outcome of the task should become a durable object instead of staying in the chat. Also use it before writing an ADR, a plan or a test plan, to check what already exists."
+description: "Read and maintain the project's Structree knowledge graph: requirements, scenarios, criteria, decisions and their statuses, contracts, interfaces, entities, tests, file bindings, evidence and reviews. Use for project conversations, decisions, interviews, requirement or implementation changes, verification results, and ongoing session knowledge capture, not only an explicit request to save notes. Also use when checking existing project knowledge, avoiding duplicate decisions or tests, tracing impact or coverage, or preparing an ADR, plan or test plan."
 compatibility: Requires the structree MCP server to be registered in the session.
 metadata:
   surface: mcp
@@ -46,7 +46,23 @@ Do not use it when:
 - you are storing scratch output, logs, or anything the object model has no
   shape for;
 - you would be inventing content to fill a gap. Objects should record what is
-  real. An empty vault area is a fact about the project, not a task.
+   real. An empty vault area is a fact about the project, not a task.
+
+## Keep session knowledge current
+
+While this skill is active, maintain durable project knowledge throughout the
+session, not only when asked to save it at the end. At material conversation or
+interview outcomes, accepted/revised decisions, implementation changes,
+verification results, and handoff, extract what changed and reconcile the
+affected objects. This is agent behavior at checkpoints, not a background
+listener or a guarantee that the skill loads on every turn.
+
+Use [continuous session capture](references/session-capture.md) for the extraction
+loop, status rules, permission boundaries, provenance, and examples. Within an
+authorized capture scope, save material updates without asking again for every
+object. A read-only task or explicit no-write instruction still wins. Do not
+turn a proposal into approval, a test definition into a passing run, or every
+chat message into a new object. Keep scratch/task activity in progress tracking.
 
 ## The object model
 
@@ -280,7 +296,7 @@ Every object needs all of its fields, including the null ones. `retiredAt` is
 `retiredAt` to exclude it. This is existing behavior, not a retrieval change.
 `relations` is an object even when empty.
 
-#### Keep references in both metadata and prose
+#### Keep references in both relations and prose
 
 When creating or updating an object, record its references in the appropriate
 frontmatter relation fields and also link the targets in the Markdown body using
@@ -324,6 +340,23 @@ forward.
 
 When you update, read first and write back what you read. The checksum is the
 guard against overwriting a revision someone else produced in between.
+
+#### Structured fields and focused updates
+
+All 12 schemas support optional top-level `fileBindings`, `evidences`, and
+`reviews`; only ADRs support `decision`. `metadata` remains arbitrary JSON with
+no reserved keys or automatic promotion of legacy values. See
+[field structures and statuses](references/object-model.md#structured-fields).
+
+Use `objects_fields_get({ type, id })` to read present top-level fields and a
+checksum. Use `objects_fields_update` with that checksum, caller-authored
+`updatedAt`, and only the fields you intend to replace. Arrays replace the whole
+list: retain existing entries when adding evidence or reviews. Omission retains
+a field, `[]` clears a list, and `decision: null` removes an ADR decision; neither
+clearing operation means rejection or withdrawal. Only use them intentionally.
+These tools preserve all metadata and the body; use a full object update
+when rationale, relations, or prose links also change. Partial objects are
+refused, not repaired. Tool payloads are in `references/tool-reference.md`.
 
 ### 6. Check the state
 
@@ -457,4 +490,6 @@ for the work.
 - `references/object-model.md`: every type, its fields and the target type of
   every relation.
 - `references/tool-reference.md`: every tool, its parameters, its limits and
-  what it returns.
+   what it returns.
+- `references/session-capture.md`: continuous conversation/interview extraction,
+  authored status changes, evidence limits, and checkpoint reconciliation.

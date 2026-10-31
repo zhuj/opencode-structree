@@ -55,7 +55,7 @@ export async function publish(
       throw new Error("OUTPUT_CHANGED: Output changed before publication.");
     for (const object of snapshot.result.objects) {
       try {
-        await fileBindings(object.header.metadata, snapshot.projectRoot, options.signal);
+        await fileBindings(object.header, snapshot.projectRoot, options.signal);
       } catch (cause) {
         options.signal?.throwIfAborted();
         throw new Error("BINDING_CHANGED: Project file bindings changed before publication.", {

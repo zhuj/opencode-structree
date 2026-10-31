@@ -5,6 +5,11 @@ modules and declared external dependencies; it never imports the application's
 12 core schemas, core registrations, CLI, examples, or package root. You can copy
 `src/lib` into another Bun/TypeScript project or consume the package subpaths.
 
+This is a semantic boundary, not only an import rule: the library must not embed
+Structree decision statuses, evidence/review schemas, application-field profiles,
+or application tool registration. Application adapters compose those features
+outside the library. See [the library rules](../src/lib/AGENTS.md).
+
 ## Entry points
 
 | Import | Purpose |
@@ -14,8 +19,8 @@ modules and declared external dependencies; it never imports the application's
 | `@local/object-mcp/sqlite` | Database/table/index abstractions, prepared mutations, driver contracts, and `SqliteProcessLock`. |
 | `@local/object-mcp/json-repair` | Standalone Effect-validated relaxed parsing and its lower-level repair APIs. |
 | `@local/object-mcp/embeddings` | Embedding-provider factory and local ONNX/OpenAI implementations. |
-| `@local/object-mcp/schemas` | The application's 12 concrete schemas and their ID schemas. |
-| `@local/object-mcp` | Application convenience API: generic exports plus core schemas and registrations; `createFramework()` defaults to the core registry. |
+| `@local/object-mcp/schemas` | The application's 12 concrete schemas, ID schemas, and structured field schemas/types. |
+| `@local/object-mcp` | Application convenience API: generic exports plus core schemas, structured fields, registrations, and application MCP composition; `createFramework()` defaults to the core registry. |
 
 The generic and application factories deliberately have different defaults.
 `createFramework` from `/lib` requires `definitions` or `registry`. An explicit
@@ -41,7 +46,8 @@ adapting a framework provider to an indexed table.
 | `src/lib/embeddings/`, `chunking.ts` | Local/remote inference, model assets, batching, normalization, and retrieval windows. |
 | `src/lib/json-repair/` | Bounded JSON syntax repair, schema interpretation, key matching, structural routing, and final Effect decoding. |
 | `src/lib/config.ts`, `errors.ts` | Validated settings and shared errors. |
-| `src/schemas/` | The 12 concrete application schemas. `base.ts` is a compatibility re-export of the library primitives. |
+| `src/schemas/` | The 12 concrete application schemas. `base.ts` extends the generic base with optional top-level application fields, leaving metadata opaque. |
+| `src/object-fields/`, `src/mcp.ts` | Structree field schemas, types, profile interpretation, focused tools, and application MCP composition. |
 | `src/registry.ts`, `framework.ts`, `index.ts`, `cli.ts` | Core registrations, the default application factory, public application exports, and process/transport wiring. |
 
 Scripts remain executable application wiring; generic model, parsing, storage,
@@ -89,7 +95,7 @@ const server = createMcpServer(objects, { name: "notes", version: "1.0.0" });
 // Attach the host's transport. The host owns objects.close() at shutdown.
 ```
 
-This registration exposes five note tools and the four shared tools. It does
+This registration exposes five note tools and the five shared tools. It does
 not register any core entity. Enable ONNX/OpenAI in `config.embeddings` to add
 semantic and hybrid search; the same generic code handles their cache lifecycle.
 The executable API example is [examples/notes-library.ts](../examples/notes-library.ts).

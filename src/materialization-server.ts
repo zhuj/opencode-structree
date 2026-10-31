@@ -1,10 +1,10 @@
 import path from "node:path";
 import { registerDoctorTools } from "./lib/doctor-mcp.ts";
 import { registerMaterializationTools } from "./lib/materialization-mcp.ts";
-import { createMcpServer } from "./lib/mcp.ts";
 import { createSourceRepairSession } from "./lib/source-repair/index.ts";
 import { registerSourceRepairToolsWithSessionFactory } from "./lib/source-repair-mcp.ts";
 import type { FrameworkConfig, ObjectFacade } from "./lib/types.ts";
+import { createMcpServer } from "./mcp.ts";
 
 /** Keep the library's existing server opt-in; only CLI serve installs these tools by default. */
 export function createMaterializationServer(

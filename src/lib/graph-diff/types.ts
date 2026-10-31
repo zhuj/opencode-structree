@@ -1,7 +1,7 @@
 import type {
+  FileBinding,
   JsonValue,
   ObjectRef,
-  ProjectFileBinding,
   RelationKind,
   SemanticReference,
 } from "../model/index.ts";
@@ -34,14 +34,14 @@ export interface ReferenceChanges {
 
 export interface SymbolChange {
   readonly path: string;
-  readonly role: ProjectFileBinding["role"];
+  readonly role: FileBinding["role"];
   readonly from?: string;
   readonly to?: string;
 }
 
 export interface BindingChanges {
-  readonly added: readonly ProjectFileBinding[];
-  readonly removed: readonly ProjectFileBinding[];
+  readonly added: readonly FileBinding[];
+  readonly removed: readonly FileBinding[];
   readonly symbolChanged: readonly SymbolChange[];
 }
 

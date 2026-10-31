@@ -87,7 +87,13 @@ def run():
             assert opened["protocolVersion"] == "2025-11-25", opened
             send(process, {"jsonrpc": "2.0", "method": "notifications/initialized"})
             tools = call(process, 2, "tools/list", {})["tools"]
-            assert len(tools) == 71
+            assert len(tools) == 73
+            assert {"objects_fields_get", "objects_fields_update"} <= {
+                tool["name"] for tool in tools
+            }
+            assert not {"objects_metadata_get", "objects_metadata_update"} & {
+                tool["name"] for tool in tools
+            }
             assert {"objects_validate", "objects_materialize"} <= {
                 tool["name"] for tool in tools
             }

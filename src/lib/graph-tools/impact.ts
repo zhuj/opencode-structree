@@ -1,9 +1,4 @@
-import type {
-  MaterializedObject,
-  ObjectRef,
-  ProjectFileBinding,
-  RelationKind,
-} from "../model/index.ts";
+import type { FileBinding, MaterializedObject, ObjectRef, RelationKind } from "../model/index.ts";
 import { createObjectGraph, referenceKey } from "../model/index.ts";
 import {
   active,
@@ -38,7 +33,7 @@ export interface ImpactEntry {
   /** Root-outward order; each step describes the holder's actual directed reference. */
   readonly path: readonly ImpactStep[];
 }
-export interface AffectedFile extends ProjectFileBinding {
+export interface AffectedFile extends FileBinding {
   readonly origins: readonly ObjectRef[];
 }
 export interface ImpactReport {
@@ -99,7 +94,7 @@ export function impactReport(
     }
     layer = [...next.values()].sort((a, b) => compareRefs(a.origin, b.origin));
   }
-  const files = new Map<string, { binding: ProjectFileBinding; origins: ObjectRef[] }>();
+  const files = new Map<string, { binding: FileBinding; origins: ObjectRef[] }>();
   for (const entry of entries) {
     for (const binding of graph.resolve(entry.origin)?.fileBindings ?? []) {
       const normalized = { ...binding, path: portablePath(binding.path) ?? binding.path };

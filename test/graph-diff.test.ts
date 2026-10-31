@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { diffGraphs } from "../src/lib/graph-diff/index.ts";
-import type { ProjectFileBinding } from "../src/lib/model/index.ts";
+import type { FileBinding } from "../src/lib/model/index.ts";
 import { object, reference } from "./graph-diff-fixture.ts";
 
 describe("semantic graph diff", () => {
@@ -142,13 +142,13 @@ describe("semantic graph diff", () => {
   });
 
   test("reports bindings and symbol changes, preserving duplicate multiplicity", () => {
-    const binding: ProjectFileBinding = {
+    const binding: FileBinding = {
       root: "project",
       path: "src/a.ts",
       role: "implementation",
     };
-    const removed: ProjectFileBinding = { ...binding, path: "old.ts" };
-    const added: ProjectFileBinding = { ...binding, path: "new.ts" };
+    const removed: FileBinding = { ...binding, path: "old.ts" };
+    const added: FileBinding = { ...binding, path: "new.ts" };
     const previous = object("one", { fileBindings: [binding, removed, removed] });
     const current = object("one", {
       fileBindings: [{ ...binding, symbol: "run" }, added, removed],

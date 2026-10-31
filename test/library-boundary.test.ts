@@ -59,6 +59,15 @@ test("library source imports stay inside src/lib and public reusable entrypoints
   const violations: string[] = [];
   for (const filename of source) {
     const text = await readFile(filename, "utf8");
+    if (
+      /\b(?:fieldsProfile|ObjectFieldsDefinition|ObjectFieldsSchema|ADRObjectFields|ObjectDecisionSchema|ObjectEvidence|ObjectReview|metadataProfile|ADRMetadata|DecisionStatusSchema|MetadataEvidence|MetadataReview|objects_metadata_get|objects_metadata_update|objects_fields_get|objects_fields_update)\b/.test(
+        text,
+      )
+    ) {
+      violations.push(
+        `${path.relative(projectRoot, filename)} embeds application metadata contracts`,
+      );
+    }
     // Include erased type imports: a reusable source tree must also compile without the application.
     const specifiers = text.matchAll(
       /\b(?:from\s*|(?:import|require)\s*\(\s*|import\s*)["']([^"']+)["']/g,

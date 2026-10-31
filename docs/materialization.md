@@ -96,21 +96,20 @@ Source provenance is `{ root: "vault", path, checksum }`. Paths are vault-relati
 
 Semantic references are `{ field, kind, target: { type, id } }`. Registered relation descriptors determine their meaning, target type and cardinality. Descriptor paths address decoded plugin values even when a schema codec uses another wire representation. Generated headers retain encoded JSON, including string timestamps, rather than falsely claiming to be decoded domain objects with `Date` values.
 
-Implementation, test and documentation links require an explicit convention:
+Implementation, test and documentation links use the explicit top-level field:
 
 ```yaml
-metadata:
-  fileBindings:
-    - root: project
-      path: src/orders.ts
-      role: implementation
-      symbol: createOrder
-    - root: project
-      path: test/orders.test.ts
-      role: test
+fileBindings:
+  - root: project
+    path: src/orders.ts
+    role: implementation
+    symbol: createOrder
+  - root: project
+    path: test/orders.test.ts
+    role: test
 ```
 
-Supported roles are `implementation`, `test` and `documentation`. `symbol` is optional descriptive text, not a verified symbol lookup. Paths must be portable project-relative paths to existing regular files without symlink components. Bindings are checked again before publication. Arbitrary metadata strings are never interpreted as file links.
+Supported roles are `implementation`, `test` and `documentation`. `symbol` is optional descriptive text, not a verified symbol lookup. Paths must be portable project-relative paths to existing regular files without symlink components. Bindings are checked again before publication. Metadata is opaque: even a key named `metadata.fileBindings` is not a binding declaration and does not produce derived attachments or binding-validation errors. Existing records are not migrated automatically; author top-level bindings explicitly when authorized, then check/regenerate snapshots through the normal workflow.
 
 ## Generated Artifacts
 

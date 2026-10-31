@@ -14,7 +14,7 @@ export interface SourceProvenance {
   readonly path: string;
   readonly checksum: string;
 }
-export interface ProjectFileBinding {
+export interface FileBinding {
   readonly root: "project";
   readonly path: string;
   readonly role: "implementation" | "test" | "documentation";
@@ -31,7 +31,7 @@ export interface MaterializedObject<Type extends string = string, Id extends str
   readonly body: string;
   readonly source: SourceProvenance;
   readonly references: readonly SemanticReference[];
-  readonly fileBindings: readonly ProjectFileBinding[];
+  readonly fileBindings: readonly FileBinding[];
 }
 export interface ResolvedReference extends SemanticReference {
   readonly source: ObjectRef;

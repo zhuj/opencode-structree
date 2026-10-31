@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createMcpHandler } from "@modelcontextprotocol/server";
-import { createMcpServer } from "../src/lib/mcp.ts";
+import { createMcpServer } from "../src/mcp.ts";
 import { fixture, graph, releaseRelationsFixture } from "./helpers/relations-fixture.ts";
 
 afterEach(releaseRelationsFixture);
@@ -22,7 +22,7 @@ describe("relation graph over MCP", () => {
     );
     try {
       const tools = (await client.listTools()).tools;
-      expect(tools).toHaveLength(65);
+      expect(tools).toHaveLength(67);
       expect(tools.map((tool) => tool.name)).toContain("objects_relations");
 
       const result = await client.callTool({

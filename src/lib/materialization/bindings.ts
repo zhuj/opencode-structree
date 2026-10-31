@@ -1,18 +1,18 @@
 import * as fs from "node:fs/promises";
-import type { ProjectFileBinding } from "../model/index.ts";
+import type { FileBinding } from "../model/index.ts";
 import { isRecord } from "./data.ts";
 import { confinedPath } from "./paths.ts";
 
 export async function fileBindings(
-  metadata: unknown,
+  header: unknown,
   projectRoot: string,
   signal?: AbortSignal,
-): Promise<readonly ProjectFileBinding[]> {
+): Promise<readonly FileBinding[]> {
   signal?.throwIfAborted();
-  if (!isRecord(metadata) || !Object.hasOwn(metadata, "fileBindings")) return [];
-  const values = metadata.fileBindings;
-  if (!Array.isArray(values)) throw new Error("metadata.fileBindings must be an array.");
-  const bindings: ProjectFileBinding[] = [];
+  if (!isRecord(header) || !Object.hasOwn(header, "fileBindings")) return [];
+  const values = header.fileBindings;
+  if (!Array.isArray(values)) throw new Error("fileBindings must be an array.");
+  const bindings: FileBinding[] = [];
   for (const value of values) {
     signal?.throwIfAborted();
     if (

@@ -12,9 +12,7 @@ async function prepared() {
   try {
     await writeFile(path.join(f.projectRoot, "implementation.ts"), "export const value = 1;\n");
     await f.write("a", {
-      metadata: {
-        fileBindings: [{ root: "project", path: "implementation.ts", role: "implementation" }],
-      },
+      fileBindings: [{ root: "project", path: "implementation.ts", role: "implementation" }],
     });
     await f.write("b", { relations: { parent: null, depends: ["a"] } });
     await f.write("c", { relations: { parent: null, depends: ["b"] } });

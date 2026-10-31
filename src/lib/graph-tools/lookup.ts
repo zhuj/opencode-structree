@@ -1,4 +1,4 @@
-import type { MaterializedObject, ProjectFileBinding } from "../model/index.ts";
+import type { FileBinding, MaterializedObject } from "../model/index.ts";
 import { createObjectGraph } from "../model/index.ts";
 import { compareRefs, compareText, portablePath } from "./shared.ts";
 
@@ -11,7 +11,7 @@ export interface FileMatch {
   readonly object: MaterializedObject;
   readonly root: "vault" | "project";
   readonly path: string;
-  readonly binding?: ProjectFileBinding;
+  readonly binding?: FileBinding;
 }
 
 export function lookupByFile(

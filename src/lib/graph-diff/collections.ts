@@ -1,4 +1,4 @@
-import type { ProjectFileBinding, SemanticReference } from "../model/index.ts";
+import type { FileBinding, SemanticReference } from "../model/index.ts";
 import { compareText } from "./header.ts";
 import type { BindingChanges, ReferenceChanges, ReferenceRetarget, SymbolChange } from "./types.ts";
 
@@ -86,8 +86,8 @@ export function diffReferences(
 }
 
 export function diffBindings(
-  previous: readonly ProjectFileBinding[],
-  current: readonly ProjectFileBinding[],
+  previous: readonly FileBinding[],
+  current: readonly FileBinding[],
 ): BindingChanges {
   const result = pairGroups(
     previous,

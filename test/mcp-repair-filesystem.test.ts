@@ -5,7 +5,7 @@ import path from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { createFramework } from "../src/framework.ts";
-import { createMcpServer } from "../src/lib/mcp.ts";
+import { createMcpServer } from "../src/mcp.ts";
 
 test("repaired MCP writes reach Markdown and search while rejected repairs preserve the source revision", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "mcp-repair-filesystem-"));

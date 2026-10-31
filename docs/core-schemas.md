@@ -11,8 +11,10 @@ This implementation follows the supplied schema specification dated **2026-10-15
 | `retiredAt` | `Date` or `null` | yes |
 | `tags` | `Record<string,string>` | yes |
 | `metadata` | `Record<string,any>` | yes |
+| `fileBindings`, `evidences`, `reviews` | Structured arrays on all 12 application types | no |
+| `decision` | Structured decision on ADRs only | no |
 
-The persistence/MCP codec encodes dates as ISO strings and applies JSON representability rules at the boundary. Each concrete schema spreads `...BaseObjectSchema.fields` and adds a required `relations` struct. All fields below are relative to `relations`, and all keys are required. `?` below means a required nullable value, not an omitted key.
+The persistence/MCP codec encodes dates as ISO strings and applies JSON representability rules at the boundary. `metadata` is general-purpose JSON with no reserved keys. The optional structured fields are top-level siblings of metadata, not blocks within it; see [structured object fields](object-fields.md). Legacy metadata values are preserved without automatic migration or interpretation. Each concrete schema spreads `...BaseObjectSchema.fields` and adds a required `relations` struct. In the relation sections below, all fields are relative to `relations` and all keys are required. `?` there means a required nullable value, not an omitted key.
 
 These requirements govern validated objects and create/update inputs. Reads and
 index discovery also accept incomplete documents: absent/broken frontmatter or
