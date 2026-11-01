@@ -4,8 +4,8 @@ import type { ObjectDefinition } from "../lib/types.ts";
 export type { FileBinding } from "../lib/model/index.ts";
 
 /** Only application MCP adapters interpret this optional capability on registered definitions. */
-export interface ObjectFieldsDefinition extends ObjectDefinition {
-  readonly fieldsProfile: "common" | "adr";
+export interface ObjectFieldsDefinition<Profile extends string = string> extends ObjectDefinition {
+  readonly fieldsProfile: Profile;
 }
 
 /** A historical citation, not a request to read or execute its target. */
@@ -33,21 +33,9 @@ export interface ObjectReview {
   readonly commit?: string;
 }
 
-export type DecisionStatus = "proposed" | "accepted" | "rejected" | "superseded" | "withdrawn";
-export interface ObjectDecision {
-  readonly status: DecisionStatus;
-  readonly decidedAt?: string;
-  readonly source?: EvidenceSource;
-}
-
 /** Optional top-level fields; general-purpose metadata is a separate object property. */
 export interface ObjectFields {
   readonly fileBindings?: readonly FileBinding[];
   readonly evidences?: readonly ObjectEvidence[];
   readonly reviews?: readonly ObjectReview[];
-}
-
-/** Only architecture decision records support a top-level decision. */
-export interface ADRObjectFields extends ObjectFields {
-  readonly decision?: ObjectDecision;
 }

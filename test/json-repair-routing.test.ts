@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { type JsonSchema, Schema } from "effect";
 import { createInputRepairer, parseJson } from "../src/lib/json-repair";
-import { FeatureSchema } from "../src/schemas";
+import { FeatureSchema } from "../src/structree/schemas/index.ts";
 
 const FeatureInput = Schema.Struct({
   object: FeatureSchema,

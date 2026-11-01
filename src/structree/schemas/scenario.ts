@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { BaseObjectSchema, idSchema } from "./base";
+import { BaseObjectSchema, idSchema } from "../../base-schema.ts";
 import { FeatureIDSchema } from "./feature";
 
 export const ScenarioIDSchema = idSchema(

@@ -1,11 +1,6 @@
+export * from "../base-schema.ts";
+export * from "../memory/schemas/index.ts";
 export * from "../object-fields/schemas.ts";
 export type * from "../object-fields/types.ts";
-export * from "./adr";
-export * from "./base";
-export * from "./contract";
-export * from "./entity";
-export * from "./feature";
-export * from "./interface";
-export * from "./project";
-export * from "./scenario";
-export * from "./test-objects";
+export * from "../structree/schemas/index.ts";
+export type * from "../structree/types.ts";

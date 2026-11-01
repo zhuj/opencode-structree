@@ -59,19 +59,6 @@ export const ObjectReviewSchema = Schema.Struct({
   workingTree: Schema.Literals(["clean", "dirty", "unknown"]),
   commit: Schema.optionalKey(Schema.String),
 });
-export const DecisionStatusSchema = Schema.Literals([
-  "proposed",
-  "accepted",
-  "rejected",
-  "superseded",
-  "withdrawn",
-]);
-export const ObjectDecisionSchema = Schema.Struct({
-  status: DecisionStatusSchema,
-  decidedAt: Schema.optionalKey(ObjectFieldTimestampSchema),
-  source: Schema.optionalKey(EvidenceSourceSchema),
-});
-
 const uniqueIds = Schema.makeFilter(
   (values: readonly { readonly id: string }[]) =>
     new Set(values.map((value) => value.id)).size === values.length,
@@ -81,8 +68,4 @@ export const ObjectFieldsSchema = Schema.Struct({
   fileBindings: Schema.optionalKey(Schema.Array(FileBindingSchema)),
   evidences: Schema.optionalKey(Schema.Array(ObjectEvidenceSchema).check(uniqueIds)),
   reviews: Schema.optionalKey(Schema.Array(ObjectReviewSchema).check(uniqueIds)),
-});
-export const ADRObjectFieldsSchema = Schema.Struct({
-  ...ObjectFieldsSchema.fields,
-  decision: Schema.optionalKey(ObjectDecisionSchema),
 });

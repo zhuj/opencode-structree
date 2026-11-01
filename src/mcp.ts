@@ -4,7 +4,8 @@ import {
   registerObjectTools as registerLibraryObjectTools,
 } from "./lib/mcp.ts";
 import type { ObjectFacade } from "./lib/types.ts";
-import { registerObjectFieldsTools } from "./object-fields/mcp.ts";
+import { registerMemoryTools } from "./memory/mcp.ts";
+import { registerStructreeTools } from "./structree/mcp.ts";
 
 export { effectMcpSchema, type McpToolOptions } from "./lib/mcp.ts";
 
@@ -14,7 +15,8 @@ export function registerObjectTools(
   facade: ObjectFacade,
   options: McpToolOptions = {},
 ): void {
-  registerObjectFieldsTools(server, facade, options);
+  registerStructreeTools(server, facade, options);
+  registerMemoryTools(server, facade, options);
   registerLibraryObjectTools(server, facade, options);
 }
 

@@ -3,8 +3,9 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { Schema } from "effect";
 import { materializeObjects } from "../src/lib/materialization/index.ts";
+import { ObjectFieldsSchema } from "../src/object-fields/schemas.ts";
 import { coreDefinitions } from "../src/registry.ts";
-import { ObjectFieldsSchema, ProjectSchema } from "../src/schemas/index.ts";
+import { ProjectSchema } from "../src/structree/schemas/index.ts";
 import { fixture } from "./materialization-fixture.ts";
 
 test("moving reserved metadata to top-level fields invalidates snapshots until explicit regeneration", async () => {

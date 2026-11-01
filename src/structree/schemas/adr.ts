@@ -1,6 +1,6 @@
 import { Schema } from "effect";
-import { ADRObjectFieldsSchema } from "../object-fields/schemas.ts";
-import { BaseObjectSchema, idSchema } from "./base";
+import { BaseObjectSchema, idSchema } from "../../base-schema.ts";
+import { ADRObjectFieldsSchema } from "./decision.ts";
 import { ScenarioIDSchema } from "./scenario";
 
 export const ADRIDSchema = idSchema(

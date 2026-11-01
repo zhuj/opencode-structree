@@ -1,6 +1,6 @@
 # Core schemas
 
-This implementation follows the supplied schema specification dated **2026-10-15**. There are 12 concrete registrations; `BaseObjectSchema` is shared structure rather than an entity. Exported identifier schemas validate the portable stored-id domain, not runtime foreign keys or branded classes. Caller-supplied ids may use any case and are lowercased before validation.
+The original twelve Structree registrations follow the supplied schema specification dated **2026-10-15**. The default registry also includes the skill-derived `memory` type, described in [project memory](memory.md). `BaseObjectSchema` is shared structure rather than an entity. Exported identifier schemas validate the portable stored-id domain, not runtime foreign keys or branded classes. Caller-supplied ids may use any case and are lowercased before validation.
 
 ## Shared fields
 
@@ -11,7 +11,7 @@ This implementation follows the supplied schema specification dated **2026-10-15
 | `retiredAt` | `Date` or `null` | yes |
 | `tags` | `Record<string,string>` | yes |
 | `metadata` | `Record<string,any>` | yes |
-| `fileBindings`, `evidences`, `reviews` | Structured arrays on all 12 application types | no |
+| `fileBindings`, `evidences`, `reviews` | Structured arrays on all application types, including memory | no |
 | `decision` | Structured decision on ADRs only | no |
 
 The persistence/MCP codec encodes dates as ISO strings and applies JSON representability rules at the boundary. `metadata` is general-purpose JSON with no reserved keys. The optional structured fields are top-level siblings of metadata, not blocks within it; see [structured object fields](object-fields.md). Legacy metadata values are preserved without automatic migration or interpretation. Each concrete schema spreads `...BaseObjectSchema.fields` and adds a required `relations` struct. In the relation sections below, all fields are relative to `relations` and all keys are required. `?` there means a required nullable value, not an omitted key.
@@ -70,7 +70,7 @@ Empty arrays and explicit nullable parents are valid, but caller-supplied object
 
 ### Relation kinds
 
-Each relationship field carries a kind, declared next to the schema in `src/registry.ts`. The kind is not derivable from the field name, and it decides how a change propagates along the relation, which is what the `objects_relations` tool walks.
+Each relationship field carries a kind, declared by its domain registry: `src/structree/registry.ts` for the original twelve types and `src/memory/registry.ts` for memory. The root `src/registry.ts` composes those declarations. The kind is not derivable from the field name, and it decides how a change propagates along the relation, which is what the `objects_relations` tool walks.
 
 | Kind | Fields | A change to the target reaches the holder | A change to the holder reaches the target |
 | --- | --- | --- | --- |
@@ -168,14 +168,17 @@ or additional per-hit reads. See [decision 0009](decisions/0009-fulltext-search-
 
 | File | Exports |
 | --- | --- |
-| `src/schemas/base.ts` | Shared string primitives and `BaseObjectSchema` |
-| `src/schemas/project.ts` | `ProjectSchema`, `ProjectGoalSchema`, IDs |
-| `src/schemas/feature.ts` | `FeatureSchema`, ID |
-| `src/schemas/scenario.ts` | `ScenarioSchema`, `ScenarioAcceptanceCriteriaSchema`, IDs |
-| `src/schemas/adr.ts` | `ADRSchema`, ID |
-| `src/schemas/contract.ts` | `ContractSchema`, ID |
-| `src/schemas/interface.ts` | `InterfaceSchema`, ID |
-| `src/schemas/entity.ts` | `EntitySchema`, ID |
-| `src/schemas/test-objects.ts` | `UnitTestSchema`, `ScenarioTestSchema`, `AcceptanceTestSchema`, IDs |
+| `src/base-schema.ts` | Shared application `BaseObjectSchema` and string primitives |
+| `src/structree/schemas/project.ts` | `ProjectSchema`, `ProjectGoalSchema`, IDs |
+| `src/structree/schemas/feature.ts` | `FeatureSchema`, ID |
+| `src/structree/schemas/scenario.ts` | `ScenarioSchema`, `ScenarioAcceptanceCriteriaSchema`, IDs |
+| `src/structree/schemas/adr.ts` | `ADRSchema`, ID |
+| `src/structree/schemas/decision.ts` | ADR-only decision schemas |
+| `src/structree/schemas/contract.ts` | `ContractSchema`, ID |
+| `src/structree/schemas/interface.ts` | `InterfaceSchema`, ID |
+| `src/structree/schemas/entity.ts` | `EntitySchema`, ID |
+| `src/structree/schemas/test-objects.ts` | `UnitTestSchema`, `ScenarioTestSchema`, `AcceptanceTestSchema`, IDs |
+| `src/memory/schemas/` | Shared memory attributes and twelve category schemas |
+| `src/schemas/index.ts` | Public aggregate facade for both domains and common fields |
 
 All identifier schemas and relationship fields/structs have descriptive annotations. `objects_definitions` exposes the canonical JSON schemas at runtime; no second handwritten JSON schema set needs to be maintained. `examples/sample-data.ts` supplies one linked object of each concrete type, and `scripts/seed-example.ts` validates/persists them through the public facade.

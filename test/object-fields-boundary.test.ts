@@ -26,6 +26,20 @@ const fieldSchemas = [
   "ObjectFieldIdentifierSchema",
   "ObjectFieldPathSchema",
   "FileBindingSchema",
+  "MemoryBaseSchema",
+  "MemorySchema",
+  "MemoryLessonSchema",
+  "MemoryApproachSchema",
+  "MemoryRuleSchema",
+  "MemoryArchitectureSchema",
+  "MemoryDecisionSchema",
+  "MemoryInterfaceSchema",
+  "MemoryDomainSchema",
+  "MemoryEnvironmentSchema",
+  "MemoryOperationsSchema",
+  "MemoryTestingSchema",
+  "MemorySecuritySchema",
+  "MemoryInvestigationSchema",
 ];
 const fieldTypes = [
   "ObjectFieldsDefinition",
@@ -37,6 +51,10 @@ const fieldTypes = [
   "EvidenceKind",
   "EvidenceSource",
   "ObjectReview",
+  "Memory",
+  "MemoryCategory",
+  "MemoryStatus",
+  "MemoryConfidence",
 ];
 
 test("application fields exports and composition do not leak through the library entrypoint", () => {
@@ -120,7 +138,7 @@ test("custom fields capability is interpreted only by the application adapter", 
 });
 
 test.each([undefined, "metadataProfile", "fieldsProfile"])(
-  "generic MCP stays at 65 tools with the same core definitions and extra profile %s",
+  "generic MCP stays at 70 tools with the same core definitions and extra profile %s",
   async (profile) => {
     const definitions =
       profile === undefined
@@ -129,10 +147,18 @@ test.each([undefined, "metadataProfile", "fieldsProfile"])(
     await withObjectFieldsClient(
       async ({ client }) => {
         const names = (await client.listTools()).tools.map((tool) => tool.name);
-        expect(names).toHaveLength(65);
+        expect(names).toHaveLength(70);
         expect(names).not.toContain("objects_fields_get");
         expect(names).not.toContain("objects_fields_update");
         expect(names).toContain("adr_create");
+        for (const name of [
+          "memory_context",
+          "memory_search",
+          "memory_related",
+          "memory_set_status",
+        ])
+          expect(names).not.toContain(name);
+        expect(names).toContain("memory_create");
         expect(names).toContain("objects_search");
       },
       definitions,
@@ -141,10 +167,10 @@ test.each([undefined, "metadataProfile", "fieldsProfile"])(
   },
 );
 
-test("application root MCP keeps 67 tools over the same core facade", async () => {
+test("application root MCP keeps 76 tools over the same core facade", async () => {
   await withObjectFieldsClient(
     async ({ client, framework }) => {
-      expect((await client.listTools()).tools).toHaveLength(67);
+      expect((await client.listTools()).tools).toHaveLength(76);
       const stored = await framework.create("adr", fieldsObject("adr", {}, legacy));
       const result = await client.callTool({
         name: "objects_fields_update",
@@ -166,11 +192,11 @@ test("application root MCP keeps 67 tools over the same core facade", async () =
   );
 });
 
-test("CLI composition keeps all 73 tools and checksum-guarded field updates", async () => {
+test("CLI composition keeps all 82 tools and checksum-guarded field updates", async () => {
   await withObjectFieldsClient(
     async ({ client, framework }) => {
       const names = (await client.listTools()).tools.map((tool) => tool.name);
-      expect(names).toHaveLength(73);
+      expect(names).toHaveLength(82);
       expect(names).toContain("objects_validate");
       expect(names).toContain("objects_repair_plan");
       expect(names).toContain("objects_fields_get");

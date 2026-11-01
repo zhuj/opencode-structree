@@ -2,11 +2,11 @@
 
 All reusable implementation lives in `src/lib`. That directory imports its own
 modules and declared external dependencies; it never imports the application's
-12 core schemas, core registrations, CLI, examples, or package root. You can copy
+Structree or memory schemas, core registrations, CLI, examples, or package root. You can copy
 `src/lib` into another Bun/TypeScript project or consume the package subpaths.
 
 This is a semantic boundary, not only an import rule: the library must not embed
-Structree decision statuses, evidence/review schemas, application-field profiles,
+Structree decision statuses, memory categories/lifecycle, evidence/review schemas, application-field profiles,
 or application tool registration. Application adapters compose those features
 outside the library. See [the library rules](../src/lib/AGENTS.md).
 
@@ -19,13 +19,13 @@ outside the library. See [the library rules](../src/lib/AGENTS.md).
 | `@local/object-mcp/sqlite` | Database/table/index abstractions, prepared mutations, driver contracts, and `SqliteProcessLock`. |
 | `@local/object-mcp/json-repair` | Standalone Effect-validated relaxed parsing and its lower-level repair APIs. |
 | `@local/object-mcp/embeddings` | Embedding-provider factory and local ONNX/OpenAI implementations. |
-| `@local/object-mcp/schemas` | The application's 12 concrete schemas, ID schemas, and structured field schemas/types. |
+| `@local/object-mcp/schemas` | The application's Structree and memory schemas, ID schemas, and structured field schemas/types. |
 | `@local/object-mcp` | Application convenience API: generic exports plus core schemas, structured fields, registrations, and application MCP composition; `createFramework()` defaults to the core registry. |
 
 The generic and application factories deliberately have different defaults.
 `createFramework` from `/lib` requires `definitions` or `registry`. An explicit
-empty array is valid. The root application factory still defaults to the 12
-registered core types. The `ObjectFramework` class belongs to the generic
+empty array is valid. The root application factory defaults to the twelve
+Structree types plus `memory`. The `ObjectFramework` class belongs to the generic
 library, so its static `create` also requires explicit registrations.
 
 The SQLite subpath remains separate because its legacy embedding adapter and
@@ -46,13 +46,26 @@ adapting a framework provider to an indexed table.
 | `src/lib/embeddings/`, `chunking.ts` | Local/remote inference, model assets, batching, normalization, and retrieval windows. |
 | `src/lib/json-repair/` | Bounded JSON syntax repair, schema interpretation, key matching, structural routing, and final Effect decoding. |
 | `src/lib/config.ts`, `errors.ts` | Validated settings and shared errors. |
-| `src/schemas/` | The 12 concrete application schemas. `base.ts` extends the generic base with optional top-level application fields, leaving metadata opaque. |
-| `src/object-fields/`, `src/mcp.ts` | Structree field schemas, types, profile interpretation, focused tools, and application MCP composition. |
-| `src/registry.ts`, `framework.ts`, `index.ts`, `cli.ts` | Core registrations, the default application factory, public application exports, and process/transport wiring. |
+| `src/base-schema.ts`, `src/object-fields/` | Shared application base and common file-binding, evidence and review schemas/types. Metadata stays opaque; neither domain is imported here. |
+| `src/structree/` | The twelve Structree schemas, ADR-only decisions, relation declarations, domain registry and specialized MCP registration. |
+| `src/memory/` | Skill-derived memory schemas, category/lifecycle rules, relation descriptors and specialized application MCP tools. |
+| `src/schemas/index.ts` | Public aggregate schema facade exporting common, Structree and memory contracts without defining concrete domain schemas. |
+| `src/registry.ts`, `src/mcp.ts` | Common application composition: import the Structree and memory domain registrations and combine them with generic infrastructure. |
+| `src/framework.ts`, `src/index.ts`, `src/cli.ts` | Default application factory, public convenience exports and process/transport wiring. |
 
 Scripts remain executable application wiring; generic model, parsing, storage,
 and indexing work is implemented in the library. There are no duplicate old
 implementations outside `src/lib`.
+
+The two application domains are independent: neither imports the other or the
+aggregate schema facade. Both use `src/base-schema.ts` and shared fields directly.
+`structreeDefinitions` and `memoryDefinitions` are combined, in that order, by
+the root registry. Root MCP composition calls `registerStructreeTools`,
+`registerMemoryTools` and the generic adapter. The Structree adapter registers
+the existing `objects_fields_*` tools once for all opted-in definitions,
+including common-field-only memory definitions; it alone interprets ADR decisions.
+This source relocation does not change package entry points, storage directories,
+wire schemas or the default 82-tool CLI surface.
 
 ## A different object application
 

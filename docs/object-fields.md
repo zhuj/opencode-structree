@@ -4,9 +4,10 @@ Every built-in object keeps general-purpose, JSON-compatible `metadata`. There
 are no reserved metadata keys: values named `decision`, `fileBindings`,
 `evidences`, or `reviews` have no special meaning inside that map.
 
-Structured data instead lives in optional top-level object fields. All 12
-Structree types support `fileBindings`, `evidences`, and `reviews`; only ADRs
-support `decision`. Missing fields imply no default status or review outcome.
+Structured data instead lives in optional top-level object fields. All twelve
+Structree types and the integrated `memory` type support `fileBindings`,
+`evidences`, and `reviews`; only ADRs support `decision`. Missing fields imply
+no default status or review outcome.
 
 ## Structures
 
@@ -101,6 +102,14 @@ dependency-free `/model` entry point do not expose Structree decision, evidence,
 or review contracts. Generic MCP servers do not install application tools when
 handed application definitions.
 
+Common field contracts live in `src/object-fields`; the shared application
+base lives in `src/base-schema.ts`. ADR-only decision schemas and types live in
+`src/structree/schemas/decision.ts` and `src/structree/types.ts`. Their interpreting
+adapter, `src/structree/mcp.ts`, supplies the existing focused tools for all
+opted-in definitions, including memory's common fields. Neither memory nor
+the shared fields modules depend on Structree. The public `/schemas` aggregate
+continues to expose all of these application contracts.
+
 The application exports `ObjectFieldsSchema`, `ADRObjectFieldsSchema`,
 `ObjectDecisionSchema`, `ObjectEvidenceSchema`, `ObjectReviewSchema`,
 `EvidenceSourceSchema`, `DecisionStatusSchema`, and `FileBindingSchema`,
@@ -109,8 +118,10 @@ with corresponding `ObjectFields`, `ADRObjectFields`, `ObjectDecision`,
 `DecisionStatus` types. `ObjectFieldPathSchema`, `ObjectFieldIdentifierSchema`,
 and `ObjectFieldTimestampSchema` expose the nested value constraints.
 
-Custom application definitions opt in through `ObjectFieldsDefinition` with
-`fieldsProfile: "common" | "adr"`, spreading the matching
+`ObjectFieldsDefinition<Profile>` is a shared profile-generic registration
+contract; each application adapter decides which profiles it supports. Custom
+definitions opt into the Structree adapter with `fieldsProfile: "common" | "adr"`
+and spread the matching
 `ObjectFieldsSchema.fields` or `ADRObjectFieldsSchema.fields` into their own
 schema. Use the root application's `createMcpServer` or `registerObjectTools`.
 Only opted-in types are advertised by the focused tools; the `"adr"` profile,

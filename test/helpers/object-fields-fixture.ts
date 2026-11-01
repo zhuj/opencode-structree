@@ -7,12 +7,8 @@ import { createFramework } from "../../src/framework.ts";
 import type { ObjectFramework } from "../../src/lib/framework.ts";
 import type { ObjectDefinition } from "../../src/lib/types.ts";
 import { createMcpServer } from "../../src/mcp.ts";
-import type {
-  FileBinding,
-  ObjectDecision,
-  ObjectEvidence,
-  ObjectReview,
-} from "../../src/object-fields/types.ts";
+import type { FileBinding, ObjectEvidence, ObjectReview } from "../../src/object-fields/types.ts";
+import type { ObjectDecision } from "../../src/structree/types.ts";
 
 export const timestamp = "2026-10-31T12:00:00.000Z";
 export const evidence = {

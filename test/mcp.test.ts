@@ -306,7 +306,7 @@ describe("official MCP adapter", () => {
     });
     await connected(async (client) => {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(67);
+      expect(tools).toHaveLength(76);
       const search = tools.find((tool) => tool.name === "objects_search")!;
       for (const branch of [0, 1]) {
         const prefix = `anyOf.0.properties.hits.items.anyOf.${branch}`;
@@ -406,7 +406,7 @@ describe("official MCP adapter", () => {
     await connected(
       async (client) => {
         const { tools } = await client.listTools();
-        expect(tools).toHaveLength(68);
+        expect(tools).toHaveLength(77);
         expect(tools.some((tool) => tool.name === "host_ping")).toBe(true);
         expect(tools.some((tool) => tool.name === "project_create")).toBe(true);
         expect(tools.some((tool) => tool.name === "objects_search")).toBe(true);
@@ -434,10 +434,10 @@ describe("official MCP adapter", () => {
     expect(facade.closed).toBe(0);
   });
 
-  test("advertises all 67 tools with schema-derived required fields and optional wrapper keys", async () => {
+  test("advertises all 76 tools with schema-derived required fields and optional wrapper keys", async () => {
     await connected(async (client) => {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(67);
+      expect(tools).toHaveLength(76);
       for (const definition of coreDefinitions) {
         for (const operation of ["create", "get", "update", "delete", "list"]) {
           expect(tools.some((tool) => tool.name === `${definition.name}_${operation}`)).toBe(true);
@@ -485,7 +485,7 @@ describe("official MCP adapter", () => {
       expect(schema).toHaveProperty("properties.object.properties.relations.required", ["partOf"]);
       const result = await client.callTool({ name: "objects_definitions", arguments: {} });
       expect(result.isError).not.toBe(true);
-      expect(result.structuredContent).toHaveProperty("definitions.length", 12);
+      expect(result.structuredContent).toHaveProperty("definitions.length", 13);
       for (const name of ["objects_status", "objects_resync", "objects_definitions"]) {
         const tool = tools.find((entry) => entry.name === name)!;
         expect(tool.inputSchema.type).toBe("object");
@@ -576,7 +576,7 @@ describe("official MCP adapter", () => {
     await connected(async (client) => {
       const all = await client.callTool({ name: "objects_definitions", arguments: {} });
       expect(all.isError).not.toBe(true);
-      expect(all.structuredContent).toHaveProperty("definitions.length", 12);
+      expect(all.structuredContent).toHaveProperty("definitions.length", 13);
       const guidance = (all.structuredContent as { guidance: string[] }).guidance;
       expect(guidance).toHaveLength(9);
       expect(guidance[0]).toBe(

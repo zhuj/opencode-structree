@@ -47,6 +47,14 @@ const APPROVED: readonly string[] = [
   "acceptance_test|partOf|contains|acceptance_test|one",
   "acceptance_test|dependsOn|depends|acceptance_test|many",
   "acceptance_test|commitsTo|justifies|scenario_acceptance_criteria|many",
+  "memory|buildsOn|depends|memory|many",
+  "memory|supersedes|relates|memory|many",
+  "memory|contradicts|relates|memory|many",
+  "memory|relatedTo|relates|memory|many",
+  "memory|implements|justifies|memory|many",
+  "memory|constrains|relates|memory|many",
+  "memory|motivatedBy|justifies|memory|many",
+  "memory|validatedBy|justifies|memory|many",
 ];
 
 describe("relation declarations", () => {

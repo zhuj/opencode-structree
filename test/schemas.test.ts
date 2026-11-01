@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
+import { BaseObjectSchema } from "../src/base-schema.ts";
 import { coreDefinitions, createCoreRegistry, ObjectRegistry } from "../src/registry";
-import { BaseObjectSchema, FeatureSchema, ScenarioSchema } from "../src/schemas";
+import { FeatureSchema, ScenarioSchema } from "../src/structree/schemas/index.ts";
 
 const relationships: Record<string, Record<string, unknown>> = {
   project: { partOf: null },
@@ -17,6 +18,11 @@ const relationships: Record<string, Record<string, unknown>> = {
   scenario_test: { partOf: null, dependsOn: [], relatesTo: [], commitsTo: [] },
   acceptance_test: { partOf: null, dependsOn: [], commitsTo: [] },
 };
+
+// These fixtures exercise the original twelve entity contracts; memory has its own suite.
+const originalDefinitions = coreDefinitions.filter(({ name }) =>
+  Object.hasOwn(relationships, name),
+);
 
 function object(type: string): Record<string, unknown> {
   return {
@@ -35,8 +41,8 @@ function object(type: string): Record<string, unknown> {
 
 describe("the twelve core Effect schemas", () => {
   test("contain the exact concrete entities and each required relationship", () => {
-    expect(coreDefinitions.map(({ name }) => name)).toEqual(Object.keys(relationships));
-    for (const definition of coreDefinitions) {
+    expect(originalDefinitions.map(({ name }) => name)).toEqual(Object.keys(relationships));
+    for (const definition of originalDefinitions) {
       const decoded = Schema.decodeUnknownSync(definition.schema)(object(definition.name));
       expect((decoded as unknown as { relations: unknown }).relations).toEqual(
         relationships[definition.name],
@@ -103,7 +109,7 @@ describe("the twelve core Effect schemas", () => {
 
   test("nullable fields accept explicit null, and timestamps are domain Dates", () => {
     const registry = createCoreRegistry();
-    for (const definition of coreDefinitions) {
+    for (const definition of originalDefinitions) {
       const decoded = registry.decode(definition.name, object(definition.name));
       expect(decoded.createdAt).toBeInstanceOf(Date);
       expect(decoded.retiredAt).toBeNull();
@@ -121,7 +127,7 @@ describe("the twelve core Effect schemas", () => {
 describe("registry wire and persistence boundaries", () => {
   test("round-trips every entity through canonical JSON without losing Date types", () => {
     const registry = createCoreRegistry();
-    for (const definition of coreDefinitions) {
+    for (const definition of originalDefinitions) {
       const encoded = registry.encode(definition.name, object(definition.name));
       expect(encoded.createdAt).toBe("2026-10-15T00:00:00.000Z");
       const decoded = registry.decode(definition.name, JSON.parse(JSON.stringify(encoded)));
@@ -150,7 +156,9 @@ describe("registry wire and persistence boundaries", () => {
     expect(schema.additionalProperties).toBe(false);
     expect(schema.required).toContain("retiredAt");
     for (const definition of coreDefinitions) {
-      expect(registry.jsonSchema(definition.name)).toHaveProperty("properties.id.minLength", 1);
+      const objectSchema = registry.jsonSchema(definition.name);
+      const branches = Array.isArray(objectSchema.anyOf) ? objectSchema.anyOf : [objectSchema];
+      for (const branch of branches) expect(branch).toHaveProperty("properties.id.minLength", 1);
     }
     expect(schema).toHaveProperty(
       "properties.id.description",

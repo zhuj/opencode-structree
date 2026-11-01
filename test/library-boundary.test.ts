@@ -68,6 +68,15 @@ test("library source imports stay inside src/lib and public reusable entrypoints
         `${path.relative(projectRoot, filename)} embeds application metadata contracts`,
       );
     }
+    if (
+      /\b(?:MemorySchema|MemoryBaseSchema|MemoryCategory|MemoryStatus|memoryDefinition|memoryDefinitions|registerMemoryTools|memory_context|memory_search|memory_related|memory_set_status|StructreeDefinition|structreeDefinitions|createStructreeRegistry|registerStructreeTools)\b/.test(
+        text,
+      )
+    ) {
+      violations.push(
+        `${path.relative(projectRoot, filename)} embeds application memory contracts`,
+      );
+    }
     // Include erased type imports: a reusable source tree must also compile without the application.
     const specifiers = text.matchAll(
       /\b(?:from\s*|(?:import|require)\s*\(\s*|import\s*)["']([^"']+)["']/g,
@@ -96,6 +105,10 @@ test("library source imports stay inside src/lib and public reusable entrypoints
   }
   expect("coreDefinitions" in library).toBe(false);
   expect("ProjectSchema" in library).toBe(false);
+  expect("MemorySchema" in library).toBe(false);
+  expect("registerMemoryTools" in library).toBe(false);
+  expect("structreeDefinitions" in library).toBe(false);
+  expect("registerStructreeTools" in library).toBe(false);
 });
 
 test("library framework rejects an omitted registry while the application still supplies its core definitions", async () => {
@@ -108,7 +121,7 @@ test("library framework rejects an omitted registry while the application still 
     config: { embeddings: { provider: "disabled" }, sync: { watch: false, rescanIntervalMs: 0 } },
   });
   try {
-    expect(application.definitions).toHaveLength(12);
+    expect(application.definitions).toHaveLength(13);
     expect(application.definitions[0]?.name).toBe("project");
   } finally {
     await application.close();

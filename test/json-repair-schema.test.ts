@@ -7,7 +7,7 @@ import {
   resolveRepairShape,
 } from "../src/lib/json-repair/schema-adapter";
 import { createCoreRegistry } from "../src/registry";
-import { FeatureSchema, ProjectSchema } from "../src/schemas";
+import { FeatureSchema, ProjectSchema } from "../src/structree/schemas/index.ts";
 
 function shape<S extends Schema.ConstraintDecoder<unknown>>(schema: S): RepairShape {
   return jsonSchemaToRepairShape(
@@ -64,12 +64,22 @@ describe("Effect JSON repair shapes", () => {
     const registry = createCoreRegistry();
     for (const definition of registry.definitions) {
       const source = registry.jsonSchema(definition.name);
-      const adapted = objectShape(shape(definition.schema));
-      expect(Object.keys(adapted.properties)).toEqual(Object.keys(source.properties as object));
-      expect(
-        Object.keys(adapted.properties).filter((key) => !adapted.properties[key]!.optional),
-      ).toEqual(source.required as string[]);
-      expect(adapted.additionalProperties).toBe(false);
+      const adapted = resolveRepairShape(shape(definition.schema));
+      const variants = adapted.kind === "union" ? adapted.variants : [adapted];
+      const sources: readonly Record<string, unknown>[] = Array.isArray(source.anyOf)
+        ? source.anyOf
+        : [source];
+      expect(variants).toHaveLength(sources.length);
+      for (const [index, variant] of variants.entries()) {
+        const object = objectShape(variant);
+        expect(Object.keys(object.properties)).toEqual(
+          Object.keys(sources[index]!.properties as object),
+        );
+        expect(sources[index]!.required).toEqual(
+          Object.keys(object.properties).filter((key) => !object.properties[key]!.optional),
+        );
+        expect(object.additionalProperties).toBe(false);
+      }
     }
   });
 

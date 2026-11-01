@@ -133,4 +133,27 @@ export const sampleData = [
     },
     body: "Multiple chunks from one file must occupy only one position in object search results.\n",
   },
+  {
+    type: "memory",
+    object: {
+      ...base("example-memory", "Source-authoritative knowledge boundary"),
+      category: "architecture",
+      status: "draft",
+      scope: ["src/lib/**", "src/memory/**"],
+      labels: ["source-authority", "application-boundary"],
+      confidence: "medium",
+      reviewAfter: "",
+      relations: {
+        buildsOn: [],
+        supersedes: [],
+        contradicts: [],
+        relatedTo: [],
+        implements: [],
+        constrains: [],
+        motivatedBy: [],
+        validatedBy: [],
+      },
+    },
+    body: "# Architecture\n\n## Structure\n\nMemory schemas and specialized tools belong to the application layer; the reusable library receives their definitions through generic interfaces.\n\n## Evidence and Limits\n\nThis seeded draft illustrates the object shape. Inspect the current source before promoting it to active guidance.\n",
+  },
 ] as const;

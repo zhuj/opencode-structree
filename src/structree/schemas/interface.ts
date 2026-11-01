@@ -1,6 +1,6 @@
 import { Schema } from "effect";
+import { BaseObjectSchema, idSchema } from "../../base-schema.ts";
 import { ADRIDSchema } from "./adr";
-import { BaseObjectSchema, idSchema } from "./base";
 import { ContractIDSchema } from "./contract";
 
 export const InterfaceIDSchema = idSchema(

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Effect, Schema } from "effect";
 import { parseJson } from "../src/lib/json-repair/index.ts";
-import { ProjectSchema, ScenarioSchema } from "../src/schemas/index.ts";
+import { ProjectSchema, ScenarioSchema } from "../src/structree/schemas/index.ts";
 
 function base() {
   return {

@@ -1,6 +1,6 @@
 import { Schema } from "effect";
+import { BaseObjectSchema, idSchema } from "../../base-schema.ts";
 import { ADRIDSchema } from "./adr";
-import { BaseObjectSchema, idSchema } from "./base";
 
 export const ContractIDSchema = idSchema(
   "Contract identifier. Must be a portable file name of at most 200 UTF-8 bytes.",

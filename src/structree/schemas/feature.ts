@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { BaseObjectSchema, idSchema } from "./base";
+import { BaseObjectSchema, idSchema } from "../../base-schema.ts";
 import { ProjectGoalIDSchema } from "./project";
 
 export const FeatureIDSchema = idSchema(

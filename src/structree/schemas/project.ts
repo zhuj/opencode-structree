@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { BaseObjectSchema, idSchema } from "./base";
+import { BaseObjectSchema, idSchema } from "../../base-schema.ts";
 
 export const ProjectIDSchema = idSchema(
   "Project identifier. Must be a portable file name of at most 200 UTF-8 bytes.",

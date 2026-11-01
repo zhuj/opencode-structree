@@ -4,12 +4,8 @@ import { FrameworkError } from "../lib/errors.ts";
 import { effectMcpSchema } from "../lib/mcp-input.ts";
 import { createMcpToolContext, type McpToolOptions } from "../lib/mcp-tool-context.ts";
 import type { ObjectFacade, ReadObject, StoredObject } from "../lib/types.ts";
-import {
-  ADRObjectFieldsSchema,
-  ObjectDecisionSchema,
-  ObjectFieldsSchema,
-  ObjectFieldTimestampSchema,
-} from "./schemas.ts";
+import { ObjectFieldsSchema, ObjectFieldTimestampSchema } from "../object-fields/schemas.ts";
+import { ADRObjectFieldsSchema, ObjectDecisionSchema } from "./schemas/decision.ts";
 
 const commonFields = ["fileBindings", "evidences", "reviews"] as const;
 const allFields = [...commonFields, "decision"] as const;
@@ -25,7 +21,7 @@ function requireComplete(stored: ReadObject): StoredObject {
 }
 
 /** Only opted-in application definitions advertise these typed top-level fields. */
-export function registerObjectFieldsTools(
+export function registerStructreeTools(
   server: McpServer,
   facade: ObjectFacade,
   options: McpToolOptions = {},

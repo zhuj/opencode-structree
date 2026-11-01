@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { coreDefinitions, createCoreRegistry } from "../src/registry.ts";
+import { memoryObject, memoryRelations } from "./helpers/memory-fixture.ts";
 import {
   binding,
   decision,
@@ -23,6 +24,7 @@ const relations: Record<string, Record<string, unknown>> = {
   unit_test: { partOf: null, dependsOn: [], relatesTo: [], commitsTo: [] },
   scenario_test: { partOf: null, dependsOn: [], relatesTo: [], commitsTo: [] },
   acceptance_test: { partOf: null, dependsOn: [], commitsTo: [] },
+  memory: memoryRelations(),
 };
 const opaque = {
   ...legacy,
@@ -36,7 +38,11 @@ test.each(coreDefinitions.map((definition) => definition.name))(
   "%s CRUD preserves unrestricted metadata without acquiring top-level fields",
   async (type) => {
     await withObjectFieldsClient(async ({ framework }) => {
-      const input = { ...fieldsObject(), metadata: opaque, relations: relations[type] };
+      const input = {
+        ...(type === "memory" ? memoryObject() : fieldsObject()),
+        metadata: opaque,
+        relations: relations[type],
+      };
       const created = await framework.create(type, input, "Body");
       const updated = await framework.update(
         type,
@@ -72,7 +78,7 @@ test.each(coreDefinitions.map((definition) => definition.name))(
   (type) => {
     const registry = createCoreRegistry();
     const input = {
-      ...fieldsObject(),
+      ...(type === "memory" ? memoryObject() : fieldsObject()),
       metadata: opaque,
       relations: relations[type],
       fileBindings: [binding],
@@ -95,7 +101,11 @@ test.each(
     .map((definition) => definition.name),
 )("%s rejects a top-level decision but not metadata.decision", (type) => {
   const registry = createCoreRegistry();
-  const input = { ...fieldsObject(), metadata: opaque, relations: relations[type] };
+  const input = {
+    ...(type === "memory" ? memoryObject() : fieldsObject()),
+    metadata: opaque,
+    relations: relations[type],
+  };
   expect(registry.decode(type, input).metadata).toEqual(opaque);
   expect(() => registry.decode(type, { ...input, decision })).toThrow();
 });
