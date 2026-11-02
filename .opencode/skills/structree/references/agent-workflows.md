@@ -47,6 +47,14 @@ Keep the returned id/checksum. `progress_update` records a checkpoint and/or
 intentional changes against that checksum. Use explicit blockers plus a concrete
 next action for `blocked`; `paused` work remains resumable.
 
+To revise a plan or interview rationale, supply only the intended `title`,
+`outcome`, `acceptance` or replacement `body` to `progress_update` and explain why
+in `checkpoint.note`. This adds one guarded checkpoint, preserves omitted fields,
+and does not imply approval or refreshed verification. `acceptance: []` and
+`body: ""` deliberately clear content. Read the existing body before extending
+it, because the body is replaced in full; use `work_item_get` to retrieve it.
+Title does not rename identity, and outcome does not replace `description`.
+
 Verification is separate from work status. Report `not-run`, `pending`, `failed`
 or explicitly evidenced `passed` honestly. Completed implementation is not
 automatically accepted. A citation or asserted test result is authored evidence,

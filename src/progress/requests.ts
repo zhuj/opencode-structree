@@ -21,6 +21,10 @@ export const ProgressPlanRequestSchema = Schema.Struct({
 export const ProgressUpdateRequestSchema = Schema.Struct({
   id: WorkItemIDSchema,
   expectedChecksum: Schema.NonEmptyString,
+  title: Schema.optionalKey(progressText(200)),
+  outcome: Schema.optionalKey(progressText(4000)),
+  acceptance: Schema.optionalKey(WorkAcceptanceSchema),
+  body: Schema.optionalKey(Schema.String),
   status: Schema.optionalKey(WorkStatusSchema),
   nextAction: Schema.optionalKey(progressText(4000)),
   blockers: Schema.optionalKey(WorkBlockersSchema),

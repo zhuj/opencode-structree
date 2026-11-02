@@ -35,10 +35,37 @@ Record a checkpoint with `progress_update`:
 }
 ```
 
-The service generates checkpoint timestamps, preserves prior history and body,
+The service generates checkpoint timestamps, preserves prior history and omitted body,
 and performs one guarded revision. Omitted fields survive. Explicit empty blocker
 or dependency arrays clear those fields; `parentId: null` clears a parent.
 A stale checksum fails rather than discarding someone else's checkpoint.
+
+### Revise The Plan Or Work Body
+
+`progress_update` also accepts optional `title`, `outcome`, `acceptance` and
+`body`. Supplying any of these requires an explicit `checkpoint.note` explaining
+the revision, even when clearing a list or body. For example:
+
+```json
+{
+  "id": "<returned work id>",
+  "expectedChecksum": "<latest checksum>",
+  "outcome": "Cancellation stops between source reads without model setup.",
+  "acceptance": ["No subsequent source is read after cancellation."],
+  "body": "## Scope\n\nExercise source-read cancellation only.\n",
+  "checkpoint": {"note": "Narrowed this work to the observed source-read boundary."}
+}
+```
+
+All supplied fields are replaced in one guarded revision with one appended
+checkpoint. Omitted fields survive. Retrieve existing body text before extending
+it: `body` replaces the entire body, not a patch. `body: ""` and `acceptance: []`
+intentionally clear content. Title/outcome/acceptance retain the planning bounds:
+200/4000 characters and at most 50 nonblank acceptance strings of 2000 characters.
+Changing title does not rename `id`, `name` or the file; changing outcome does not
+rewrite `description`. Revision does not imply owner approval, completion or a
+verification reset. The output remains a summary; `work_item_get` retrieves the
+full body. Older connected servers must advertise these inputs before use.
 
 ## Status And Evidence
 

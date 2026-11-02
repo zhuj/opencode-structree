@@ -79,6 +79,16 @@ export async function updateProgress(
     );
   if (stored.checksum !== request.expectedChecksum)
     throw new FrameworkError("CHECKSUM_CONFLICT", "The source revision has changed.");
+  const revisionRequested =
+    request.title !== undefined ||
+    request.outcome !== undefined ||
+    request.acceptance !== undefined ||
+    request.body !== undefined;
+  if (revisionRequested && !request.checkpoint?.note.trim())
+    throw new FrameworkError(
+      "VALIDATION_ERROR",
+      "Revising title, outcome, acceptance or body requires an explicit checkpoint.note explaining the revision.",
+    );
   const item = stored.object;
   const note = request.checkpoint?.note ?? updateNote(item, request);
   if (!note.trim())
@@ -110,6 +120,9 @@ export async function updateProgress(
   const candidate: WorkItem = {
     ...item,
     updatedAt: now,
+    title: request.title ?? item.title,
+    outcome: request.outcome ?? item.outcome,
+    acceptance: request.acceptance ?? item.acceptance,
     status: request.status ?? item.status,
     nextAction: request.nextAction ?? item.nextAction,
     blockers: request.blockers ?? item.blockers,
@@ -155,7 +168,7 @@ export async function updateProgress(
         "work_item",
         item.id,
         candidate,
-        stored.body,
+        request.body ?? stored.body,
         request.expectedChecksum,
         signal,
       ),

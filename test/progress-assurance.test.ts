@@ -19,6 +19,37 @@ const assurance: SourceIdentityAssurance = {
   ],
 };
 
+test("content revisions still refuse unverified identities before writing", async () => {
+  await withObjectFieldsClient(async ({ framework }) => {
+    const planned = await planProgress(framework, {
+      title: "Unverified revision",
+      outcome: "Keep identity refusal independent of verification",
+    });
+    await updateProgress(framework, {
+      id: planned.id,
+      expectedChecksum: planned.checksum,
+      verification: { state: "passed", testResult: "Recorded result before the revision" },
+    });
+    const before = await framework.get("work_item", planned.id);
+    const get = spyOn(framework, "get").mockResolvedValue({ ...before, assurance });
+    const update = spyOn(framework, "update");
+    try {
+      await expect(
+        updateProgress(framework, {
+          id: before.object.id,
+          expectedChecksum: before.checksum,
+          body: "Untrusted revision",
+          checkpoint: { note: "This must fail until identity is resolved" },
+        }),
+      ).rejects.toMatchObject({ code: "VALIDATION_ERROR", details: { assurance } });
+      expect(update).not.toHaveBeenCalled();
+    } finally {
+      get.mockRestore();
+      update.mockRestore();
+    }
+  }, progressDefinitions);
+});
+
 test("complete-looking unverified sources are review diagnostics rather than matching work", async () => {
   await withObjectFieldsClient(async ({ framework }) => {
     const planned = await planProgress(framework, {
