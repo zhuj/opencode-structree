@@ -5,6 +5,9 @@ import {
 } from "./lib/mcp.ts";
 import type { ObjectFacade } from "./lib/types.ts";
 import { registerMemoryTools } from "./memory/mcp.ts";
+import { registerMemoryWorkflowTools } from "./memory/workflows-mcp.ts";
+import { registerProgressTools } from "./progress/mcp.ts";
+import { registerSessionContextTool } from "./session-context.ts";
 import { registerStructreeTools } from "./structree/mcp.ts";
 
 export { effectMcpSchema, type McpToolOptions } from "./lib/mcp.ts";
@@ -17,6 +20,9 @@ export function registerObjectTools(
 ): void {
   registerStructreeTools(server, facade, options);
   registerMemoryTools(server, facade, options);
+  registerMemoryWorkflowTools(server, facade, options);
+  registerProgressTools(server, facade, options);
+  registerSessionContextTool(server, facade, options);
   registerLibraryObjectTools(server, facade, options);
 }
 

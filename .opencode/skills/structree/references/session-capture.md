@@ -27,8 +27,10 @@ writing after every sentence or postponing everything until session end.
    changed guarantees, implementation mappings, evidence, reviews, and explicit
    status changes since the last reconciled checkpoint. Separate direct user
    intent, observations, agent recommendations, hypotheses, and unknowns.
-2. **Find the owner.** Reuse known IDs. Otherwise search relevant types in
-   explicit `fulltext` mode, then get plausible owners before creating. A capped
+2. **Find the owner.** Reuse known IDs. For reusable findings use `memory_recall`;
+   for work use the selected tracker's resume/review tools. For project-intent
+   objects search relevant types in explicit `fulltext` mode, then get plausible
+   owners before creating. A capped
    empty search is not proof of absence; use narrower terms or complete relevant
    pagination when a duplicate/coverage claim depends on it. Do not enumerate
    the whole vault at every checkpoint.
@@ -39,11 +41,14 @@ writing after every sentence or postponing everything until session end.
    Preserve prior rationale/history, stable IDs, and known limitations. Cite a
    real source when available; otherwise record a concise attributed statement
    in the body with known date/context, not an invented path or approval.
-5. **Persist with tools.** Read the current revision first. Use a full per-type
-   update for content/relations plus structured fields, or focused field update
-   for top-level-field-only changes. Preserve all metadata, immutable fields, body,
+5. **Persist with tools.** Use `memory_remember/revise` for findings and
+   `progress_plan/update` for work owned in Structree. For project-intent objects,
+   read the current revision first, then use a full per-type update for
+   content/relations or focused field update for top-level-field-only changes.
+   Preserve all metadata, immutable fields, body,
    unrelated relations, and earlier evidence/reviews. On checksum conflict,
-   reread and reconcile; never force overwrite. Use actual caller timestamps.
+   reread and reconcile; never force overwrite. Compact tools supply mechanical
+   timestamps; full-object and focused-field writes need actual caller timestamps.
 6. **Reconcile the receipt.** Confirm the response names the intended object and
    revision, and report tool errors/partial success rather than claiming all
    changes saved. For changed relations use `objects_relations` to inspect
@@ -65,7 +70,8 @@ writing after every sentence or postponing everything until session end.
 | Inspected implementation/test/doc attachment | Top-level `fileBindings` for current files, not historical citations. |
 | Supporting source, documented owner decision, or actual test-result artifact | Top-level `evidences`, with a real project-relative source path. |
 | A completed scoped review | Top-level `reviews`, with limitations and known revision/working-tree state. |
-| Task activity, retries, blockers, or temporary hypotheses | Use the `progress-tracking` skill; promote only durable project facts into the relevant object. |
+| Reusable finding, lesson, scoped guidance, or uncertain investigation | Memory intent tools; preserve evidence, confidence and lifecycle explicitly. |
+| Task activity, retries, blockers, or temporary hypotheses | The existing progress owner; use Structree progress when selected, without duplicating local/external tracking. |
 
 ## Status And Evidence Discipline
 
@@ -76,7 +82,9 @@ Record concrete alternatives as proposed only when worth retaining. Preserve
 the owner's exact acceptance/cancellation scope; ask when ambiguity materially
 changes it. Do not change a previous status merely because new work started.
 
-For other types, there is no universal status field. Follow an existing verified
+Memory and work items have their own lifecycles; follow
+[agent workflows](agent-workflows.md), not ADR decision statuses. The remaining
+project-intent types have no universal status field. Follow an existing verified
 tag convention or describe state in the body. Distinguish requested, planned,
 implemented, inspected, tested, and verified. Do not infer completion from an
 agent summary or coverage link. A passing run applies only to its actual

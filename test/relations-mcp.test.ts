@@ -22,7 +22,7 @@ describe("relation graph over MCP", () => {
     );
     try {
       const tools = (await client.listTools()).tools;
-      expect(tools).toHaveLength(76);
+      expect(tools).toHaveLength(90);
       expect(tools.map((tool) => tool.name)).toContain("objects_relations");
 
       const result = await client.callTool({

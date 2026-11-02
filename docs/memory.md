@@ -12,6 +12,34 @@ remains a sibling domain rather than a prerequisite of memory's object model.
 
 ## Model And Source
 
+For ordinary agent use, prefer the [intent workflows](agent-workflows.md):
+`memory_remember`, `memory_recall`, `memory_revise`, and `memory_review`. They
+leave the full object contract available without requiring it for routine work.
+
+```json
+{"title":"Scoped cancellation","body":"Cancellation must propagate through source reads. Evidence: test/cancellation.test.ts.","scope":["source reads"]}
+```
+
+That is a `memory_remember` request. The service creates bookkeeping and defaults
+to `lessons`, `draft`, and `low` confidence; it does not verify the claim. Retain
+the returned `id` and `checksum`. To revise the body, call `memory_revise` with
+`id`, `expectedChecksum`, and `body`. Optional `changes` replaces only supplied
+fields; supplied relation arrays replace those arrays, not all relations.
+
+`memory_recall({"query":"cancellation"})` returns compact source-backed matches.
+It defaults to active/nonretired entries, applies filters before limiting output,
+and uses Unicode token-AND lexical matching, not semantic ranking. Draft findings
+are available with an explicit status filter. `maxScan` bounds source scanning
+(default 200, maximum 1000), `offset` continues that scan, and `maxChars` bounds
+the serialized memories array, not the entire envelope. Check `source`,
+`resultsTruncated`, and `exhaustive`; an empty bounded result is not proof of
+absence. Applicability is authored scope, not an automatic relevance judgment.
+
+`memory_review({})` reports overdue reviews, declared contradictions, duplicate
+title candidates, and supersession inconsistencies. Its returned UTC `asOf`, scan
+and edge bounds make the limits explicit. It neither repairs nor merges records.
+Creation reports bounded same-title candidates but never silently reuses one.
+
 The project-memory skill defines one shared durable-entry contract with twelve
 primary categories. The application registers one `memory` type, stored under
 `memories/`, with category-specific schemas sharing the existing base-object
@@ -40,7 +68,7 @@ category templates nor provenance are automatically extracted from text.
 
 ## Attribute Mapping
 
-The schemas retain all existing base fields, including required caller-owned
+The low-level schemas retain all existing base fields, including required caller-owned
 timestamps, nullable `retiredAt`, the string-map `tags`, arbitrary JSON
 `metadata`, and optional top-level `fileBindings`, `evidences` and `reviews`.
 
@@ -63,7 +91,9 @@ their inferred TypeScript types are exported by the package root and
 `@local/object-mcp/schemas`. `MemoryLessonSchema`, `MemoryDecisionSchema` and
 `MemoryInvestigationSchema` are examples of concrete category schemas.
 `memoryDefinition`, `memoryDefinitions`, `createMemoryRegistry` and
-`registerMemoryTools` are application exports. None is exported from `/lib` or
+`registerMemoryTools` are application exports. `registerMemoryWorkflowTools`,
+`rememberMemory`, `reviseMemory`, `memoryRecall`, and `memoryReview` expose the
+intent layer. None is exported from `/lib` or
 the generic `/model` entry point.
 
 This is an adaptation to the existing object model, not a drop-in parser or

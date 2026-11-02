@@ -138,7 +138,7 @@ test("custom fields capability is interpreted only by the application adapter", 
 });
 
 test.each([undefined, "metadataProfile", "fieldsProfile"])(
-  "generic MCP stays at 70 tools with the same core definitions and extra profile %s",
+  "generic MCP exposes only 75 generic tools over fourteen types despite extra profile %s",
   async (profile) => {
     const definitions =
       profile === undefined
@@ -147,7 +147,7 @@ test.each([undefined, "metadataProfile", "fieldsProfile"])(
     await withObjectFieldsClient(
       async ({ client }) => {
         const names = (await client.listTools()).tools.map((tool) => tool.name);
-        expect(names).toHaveLength(70);
+        expect(names).toHaveLength(75);
         expect(names).not.toContain("objects_fields_get");
         expect(names).not.toContain("objects_fields_update");
         expect(names).toContain("adr_create");
@@ -156,9 +156,19 @@ test.each([undefined, "metadataProfile", "fieldsProfile"])(
           "memory_search",
           "memory_related",
           "memory_set_status",
+          "memory_remember",
+          "memory_revise",
+          "memory_recall",
+          "memory_review",
+          "progress_plan",
+          "progress_update",
+          "progress_resume",
+          "progress_review",
+          "session_context",
         ])
           expect(names).not.toContain(name);
         expect(names).toContain("memory_create");
+        expect(names).toContain("work_item_create");
         expect(names).toContain("objects_search");
       },
       definitions,
@@ -167,10 +177,10 @@ test.each([undefined, "metadataProfile", "fieldsProfile"])(
   },
 );
 
-test("application root MCP keeps 76 tools over the same core facade", async () => {
+test("application root MCP exposes 90 tools over the same core facade", async () => {
   await withObjectFieldsClient(
     async ({ client, framework }) => {
-      expect((await client.listTools()).tools).toHaveLength(76);
+      expect((await client.listTools()).tools).toHaveLength(90);
       const stored = await framework.create("adr", fieldsObject("adr", {}, legacy));
       const result = await client.callTool({
         name: "objects_fields_update",
@@ -192,11 +202,11 @@ test("application root MCP keeps 76 tools over the same core facade", async () =
   );
 });
 
-test("CLI composition keeps all 82 tools and checksum-guarded field updates", async () => {
+test("CLI composition exposes all 96 tools and checksum-guarded field updates", async () => {
   await withObjectFieldsClient(
     async ({ client, framework }) => {
       const names = (await client.listTools()).tools.map((tool) => tool.name);
-      expect(names).toHaveLength(82);
+      expect(names).toHaveLength(96);
       expect(names).toContain("objects_validate");
       expect(names).toContain("objects_repair_plan");
       expect(names).toContain("objects_fields_get");

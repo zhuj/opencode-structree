@@ -87,7 +87,7 @@ def run():
             assert opened["protocolVersion"] == "2025-11-25", opened
             send(process, {"jsonrpc": "2.0", "method": "notifications/initialized"})
             tools = call(process, 2, "tools/list", {})["tools"]
-            assert len(tools) == 82
+            assert len(tools) == 96
             assert {
                 "memory_create",
                 "memory_get",
@@ -98,6 +98,20 @@ def run():
                 "memory_search",
                 "memory_related",
                 "memory_set_status",
+                "memory_remember",
+                "memory_revise",
+                "memory_recall",
+                "memory_review",
+                "work_item_create",
+                "work_item_get",
+                "work_item_update",
+                "work_item_delete",
+                "work_item_list",
+                "progress_plan",
+                "progress_update",
+                "progress_resume",
+                "progress_review",
+                "session_context",
             } <= {tool["name"] for tool in tools}
             assert {"objects_fields_get", "objects_fields_update"} <= {
                 tool["name"] for tool in tools

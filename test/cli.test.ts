@@ -237,6 +237,7 @@ FileStore.prototype.scan = async function (...args) {
         "scenario_test",
         "acceptance_test",
         "memory",
+        "work_item",
       ]);
       expect(status.syncing).toBe(false);
       expect(status.dirty).toBe(false);

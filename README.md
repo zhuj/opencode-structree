@@ -2,21 +2,28 @@
 
 A Bun/TypeScript framework that turns an **Effect-schema object registry** into MCP CRUD tools and searchable Markdown objects. The filesystem is authoritative. SQLite contains derived metadata, FTS5 data, and `sqlite-vec` embedding rows that can be rebuilt from the files.
 
-The package includes the twelve Structree schemas and an integrated project-memory object model, a standalone stdio server, and a facade that can attach tools to an existing plugin server. It has no application-level Zod schemas. Effect defines the domain, persistence codecs, configuration validation, and MCP JSON schemas; Effect also owns the runtime and in-process serialization.
+The package includes the twelve Structree schemas, durable project memory and resumable work items, a standalone stdio server, and a facade that can attach tools to an existing plugin server. It has no application-level Zod schemas. Effect defines the domain, persistence codecs, configuration validation, and MCP JSON schemas; Effect also owns the runtime and in-process serialization.
 
 The built-in schemas keep `metadata` general-purpose JSON. Optional top-level fields hold file bindings, evidence, review histories, and ADR-only decisions, with focused checksum-guarded MCP tools. See [structured object fields](docs/object-fields.md).
 
 The `memory` type adds twelve skill-derived categories, lifecycle, scope, confidence, labels and cross-memory relations. Specialized tools provide context, filtered search, related navigation and guarded status changes. See [project memory](docs/memory.md) for the attribute mapping and limits.
 
-Application domains live in `src/structree` and `src/memory`, with their schemas
-under each domain's `schemas` directory. Root MCP and registry modules compose
-both domains; the application base and common object fields remain shared.
+For normal agent use, start with the [intent workflows](docs/agent-workflows.md):
+`memory_remember`, `memory_recall`, `memory_revise`, and `memory_review`;
+`progress_plan`, `progress_update`, `progress_resume`, and `progress_review`.
+`session_context` combines a work handoff with explicitly requested memory recall.
+The service supplies mechanical bookkeeping, not approval or verified truth.
+See [resumable work](docs/progress.md) for small requests and evidence rules.
+
+Application domains live in `src/structree`, `src/memory`, and `src/progress`,
+which own their schemas and workflows. Root MCP and registry modules compose
+all three domains; the application base and common object fields remain shared.
 
 The SQLite cache uses the supplied `Database`, `Table`, `IndexedTable`, FTS, vector, and prepared-mutation abstractions, adapted to Effect and the existing cache format. Biome provides formatting, recommended lint checks, and import organization.
 
 Generated MCP tools include the supplied relaxed JSON parser's mechanisms adapted to Effect. They repair unambiguous field spelling, misplaced nesting, stringified containers, and selected scalar representations, then require the original strict schema to validate the complete arguments before a handler runs. Canonical tool schemas and outputs remain strict. See [relaxed JSON and MCP arguments](docs/relaxed-json.md).
 
-All reusable implementation now lives in **`src/lib`**, with no imports of the core application schemas. The generic `/lib` entry point takes explicit registrations; the root entry point defaults to the twelve Structree types plus memory. The supplied vault/storage concepts are implemented as a typed Markdown vault, confined filesystem, owned publication stages, watcher lifecycle, reconciliation helpers, and a reusable SQLite process lock. See [reusing the library](docs/library.md) and [vault design and APIs](docs/vault.md).
+All reusable implementation now lives in **`src/lib`**, with no imports of the core application schemas. The generic `/lib` entry point takes explicit registrations; the root entry point defaults to the twelve Structree types plus memory and work items. The supplied vault/storage concepts are implemented as a typed Markdown vault, confined filesystem, owned publication stages, watcher lifecycle, reconciliation helpers, and a reusable SQLite process lock. See [reusing the library](docs/library.md) and [vault design and APIs](docs/vault.md).
 
 ## Quick start
 
@@ -35,7 +42,7 @@ bun start
 
 Set `embeddings.localFilesOnly: true` to retain offline-only operation: a missing snapshot reports `MODEL_NOT_CACHED` without fetching anything. The diagnostic explains startup fetching when the switch is false and otherwise names `bun scripts/prepare-model.ts --config <your-config.json>` for manual preparation. The optional `bun run prepare-model` command downloads and verifies the pinned assets and runs a synthetic inference check; it is not a prerequisite for normal startup. A preparation failure is reported but does not stop the server: full-text search remains available, while semantic/hybrid requests retain their existing provider-error behavior. See [embedding preparation and errors](docs/embeddings.md#local-onnx) and [decision 0010](docs/decisions/0010-prepare-the-model-snapshot-at-startup.md).
 
-`seed-example` writes thirteen examples, including an illustrative draft memory, into the configured source root, which is `.local/.structree/objects` inside this repository for the included configuration. That directory sits under the ignored `.local/` path, so the seeded objects are authoritative source data that stays out of `git status`. They remain ordinary source files on disk: the framework reads, updates, and deletes them like any other object.
+`seed-example` writes fourteen examples, including an illustrative draft memory and a planned, unverified work item, into the configured source root, which is `.local/.structree/objects` inside this repository for the included configuration. That directory sits under the ignored `.local/` path, so the seeded objects are authoritative source data that stays out of `git status`. They remain ordinary source files on disk: the framework reads, updates, and deletes them like any other object.
 
 `bun start` communicates MCP on stdin/stdout. Connect it to an MCP client; it is not an interactive shell prompt. Diagnostics go to stderr. A typical client configuration is:
 
@@ -258,7 +265,7 @@ explicit id and a current checksum. Repair its source explicitly before mutation
 
 ## Registered schemas and their tools
 
-Every registration produces `_create`, `_get`, `_update`, `_delete`, and `_list` tools. The built-in registry now has thirteen types: the twelve Structree types plus `memory`. The application adapter adds focused object-field and specialized memory tools; CLI serve adds six host tools. Domain schemas, types and registration policy live outside `src/lib`.
+Every registration produces `_create`, `_get`, `_update`, `_delete`, and `_list` tools. The built-in registry has fourteen types: the twelve Structree types plus `memory` and `work_item`. The application adapter adds focused object-field, memory, progress and session-context tools; CLI serve adds six host tools. Domain schemas, types and registration policy live outside `src/lib`.
 
 | Schema | Registry/tool prefix | Directory |
 | --- | --- | --- |
@@ -275,6 +282,7 @@ Every registration produces `_create`, `_get`, `_update`, `_delete`, and `_list`
 | `ScenarioTestSchema` | `scenario_test` | `scenario-tests/` |
 | `AcceptanceTestSchema` | `acceptance_test` | `acceptance-tests/` |
 | `MemorySchema` | `memory` | `memories/` |
+| `WorkItemSchema` | `work_item` | `work-items/` |
 
 The shared tools are `objects_search`, `objects_relations`, `objects_resync`, `objects_status`, and `objects_definitions`. The last returns JSON schemas derived from the Effect definitions, including descriptions and required keys.
 

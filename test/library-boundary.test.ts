@@ -69,7 +69,7 @@ test("library source imports stay inside src/lib and public reusable entrypoints
       );
     }
     if (
-      /\b(?:MemorySchema|MemoryBaseSchema|MemoryCategory|MemoryStatus|memoryDefinition|memoryDefinitions|registerMemoryTools|memory_context|memory_search|memory_related|memory_set_status|StructreeDefinition|structreeDefinitions|createStructreeRegistry|registerStructreeTools)\b/.test(
+      /\b(?:MemorySchema|MemoryBaseSchema|MemoryCategory|MemoryStatus|memoryDefinition|memoryDefinitions|registerMemoryTools|memory_context|memory_search|memory_related|memory_set_status|memory_remember|memory_revise|memory_recall|memory_review|WorkItemSchema|workItemDefinition|progressDefinitions|registerProgressTools|progress_plan|progress_update|progress_resume|progress_review|session_context|StructreeDefinition|structreeDefinitions|createStructreeRegistry|registerStructreeTools)\b/.test(
         text,
       )
     ) {
@@ -107,6 +107,11 @@ test("library source imports stay inside src/lib and public reusable entrypoints
   expect("ProjectSchema" in library).toBe(false);
   expect("MemorySchema" in library).toBe(false);
   expect("registerMemoryTools" in library).toBe(false);
+  expect("WorkItemSchema" in library).toBe(false);
+  expect("progressDefinitions" in library).toBe(false);
+  expect("registerProgressTools" in library).toBe(false);
+  expect("registerMemoryWorkflowTools" in library).toBe(false);
+  expect("sessionContext" in library).toBe(false);
   expect("structreeDefinitions" in library).toBe(false);
   expect("registerStructreeTools" in library).toBe(false);
 });
@@ -121,7 +126,7 @@ test("library framework rejects an omitted registry while the application still 
     config: { embeddings: { provider: "disabled" }, sync: { watch: false, rescanIntervalMs: 0 } },
   });
   try {
-    expect(application.definitions).toHaveLength(13);
+    expect(application.definitions).toHaveLength(14);
     expect(application.definitions[0]?.name).toBe("project");
   } finally {
     await application.close();

@@ -5,9 +5,9 @@ import { memoryDefinitions } from "../src/memory/registry.ts";
 import { memoryObject, memoryRelations } from "./helpers/memory-fixture.ts";
 import { timestamp, withObjectFieldsClient } from "./helpers/object-fields-fixture.ts";
 
-test("default application registers generic memory CRUD and four specialized tools", async () => {
+test("default application registers generic memory CRUD and eight specialized tools", async () => {
   await withObjectFieldsClient(async ({ client, framework }) => {
-    expect(framework.definitions.map((d) => d.name)).toHaveLength(13);
+    expect(framework.definitions.map((d) => d.name)).toHaveLength(14);
     const names = (await client.listTools()).tools.map((t) => t.name);
     const tools = (await client.listTools()).tools;
     expect(tools.find((t) => t.name === "memory_context")).toHaveProperty(
@@ -32,9 +32,13 @@ test("default application registers generic memory CRUD and four specialized too
       "memory_search",
       "memory_related",
       "memory_set_status",
+      "memory_remember",
+      "memory_revise",
+      "memory_recall",
+      "memory_review",
     ])
       expect(names).toContain(name);
-    expect(names).toHaveLength(76);
+    expect(names).toHaveLength(90);
     const result = await client.callTool({
       name: "memory_create",
       arguments: {

@@ -1,5 +1,13 @@
 # The object model
 
+This reference details the twelve project-intent types. The application also
+registers `memory` and `work_item`; prefer their [compact intent tools](agent-workflows.md)
+for ordinary operations. Their full schemas are advertised by
+`objects_definitions({ type: "memory" })` and
+`objects_definitions({ type: "work_item" })`. Server-generated bookkeeping in
+those intent tools does not change the caller-owned full-object CRUD contract
+described here.
+
 Every registered type shares the same base fields. All of them are required by
 the schema, including the ones that are empty.
 

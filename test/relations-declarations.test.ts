@@ -55,6 +55,8 @@ const APPROVED: readonly string[] = [
   "memory|constrains|relates|memory|many",
   "memory|motivatedBy|justifies|memory|many",
   "memory|validatedBy|justifies|memory|many",
+  "work_item|parent|relates|work_item|one",
+  "work_item|dependsOn|depends|work_item|many",
 ];
 
 describe("relation declarations", () => {

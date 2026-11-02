@@ -25,7 +25,26 @@ const relations: Record<string, Record<string, unknown>> = {
   scenario_test: { partOf: null, dependsOn: [], relatesTo: [], commitsTo: [] },
   acceptance_test: { partOf: null, dependsOn: [], commitsTo: [] },
   memory: memoryRelations(),
+  work_item: { parent: null, dependsOn: [] },
 };
+function domainObject(type: string) {
+  switch (type) {
+    case "memory":
+      return memoryObject();
+    case "work_item":
+      return fieldsObject("work_item", {
+        outcome: "Keep common fields independent from work progress",
+        acceptance: [],
+        status: "planned",
+        nextAction: "Inspect common fields",
+        blockers: [],
+        verification: { state: "pending" },
+        checkpoints: [],
+      });
+    default:
+      return fieldsObject();
+  }
+}
 const opaque = {
   ...legacy,
   decision: { status: "custom-label" },
@@ -39,7 +58,7 @@ test.each(coreDefinitions.map((definition) => definition.name))(
   async (type) => {
     await withObjectFieldsClient(async ({ framework }) => {
       const input = {
-        ...(type === "memory" ? memoryObject() : fieldsObject()),
+        ...domainObject(type),
         metadata: opaque,
         relations: relations[type],
       };
@@ -78,7 +97,7 @@ test.each(coreDefinitions.map((definition) => definition.name))(
   (type) => {
     const registry = createCoreRegistry();
     const input = {
-      ...(type === "memory" ? memoryObject() : fieldsObject()),
+      ...domainObject(type),
       metadata: opaque,
       relations: relations[type],
       fileBindings: [binding],
@@ -102,7 +121,7 @@ test.each(
 )("%s rejects a top-level decision but not metadata.decision", (type) => {
   const registry = createCoreRegistry();
   const input = {
-    ...(type === "memory" ? memoryObject() : fieldsObject()),
+    ...domainObject(type),
     metadata: opaque,
     relations: relations[type],
   };

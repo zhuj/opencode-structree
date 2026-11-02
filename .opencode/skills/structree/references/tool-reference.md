@@ -1,8 +1,10 @@
 # Tool reference
 
-The current application server exposes 73 tools: 60 per-type CRUD/list tools,
-five generic globals, two application field tools, and six host tools for
-validation, materialization, diagnosis, and repair. Structured field tools and their
+The current CLI server exposes 96 tools: 70 CRUD/list tools for fourteen types,
+five generic globals, two application field tools, eight memory tools, four
+progress tools, one unified session-context tool, and six host tools for
+validation, materialization, diagnosis, and repair. Application composition
+without the optional CLI host tools exposes 90. Structured field tools and their
 Structree schema/profile policy belong to the application adapter, not the
 generic library. Host tools are optional. Discover the connected inventory
 instead of assuming a fixed count.
@@ -12,6 +14,17 @@ name is `project_get`, and a host that prefixes local MCP tools presents it as
 `structree_project_get`. The type names are the ones in
 `references/object-model.md`, and the search tool publishes them as an enum, so
 a wrong name is rejected with the valid ones in the message.
+
+## Ordinary Memory And Work
+
+Use the [compact agent workflows](agent-workflows.md) before full-object CRUD:
+`memory_remember`, `memory_recall`, `memory_revise`, `memory_review`,
+`progress_plan`, `progress_update`, `progress_resume`, `progress_review`, and
+`session_context`. These tools generate mechanical bookkeeping, preserve omitted
+content on revision, and never infer approval or test execution. Advanced memory
+navigation remains available through `memory_context`, `memory_search`,
+`memory_related`, and `memory_set_status`; their older bounded search/page
+semantics differ from the source-scanning `memory_recall` workflow.
 
 ## The per-type verbs
 

@@ -156,4 +156,19 @@ export const sampleData = [
     },
     body: "# Architecture\n\n## Structure\n\nMemory schemas and specialized tools belong to the application layer; the reusable library receives their definitions through generic interfaces.\n\n## Evidence and Limits\n\nThis seeded draft illustrates the object shape. Inspect the current source before promoting it to active guidance.\n",
   },
+  {
+    type: "work_item",
+    object: {
+      ...base("example-work", "Review source cancellation"),
+      outcome: "Confirm source reads preserve caller cancellation.",
+      acceptance: ["Cancellation stops subsequent source reads."],
+      status: "planned",
+      nextAction: "Inspect the existing cancellation tests.",
+      blockers: [],
+      verification: { state: "not-run" },
+      checkpoints: [],
+      relations: { parent: null, dependsOn: [] },
+    },
+    body: "This illustrative work item records an intended outcome, not evidence of executed tests.\n",
+  },
 ] as const;

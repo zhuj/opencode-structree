@@ -1,6 +1,6 @@
 ---
 name: structree
-description: "Read and maintain the project's Structree knowledge graph: requirements, scenarios, criteria, decisions and their statuses, contracts, interfaces, entities, tests, file bindings, evidence and reviews. Use for project conversations, decisions, interviews, requirement or implementation changes, verification results, and ongoing session knowledge capture, not only an explicit request to save notes. Also use when checking existing project knowledge, avoiding duplicate decisions or tests, tracing impact or coverage, or preparing an ADR, plan or test plan."
+description: "Use Structree for project knowledge, durable memory, resumable progress, and handoffs. Recall or revise findings, plan or checkpoint work, and maintain requirements, decisions, contracts, tests, evidence and reviews. Use during project conversations, interviews, implementation changes and verification, not only explicit requests to save notes; also use for impact, coverage and avoiding duplicate records."
 compatibility: Requires the structree MCP server to be registered in the session.
 metadata:
   surface: mcp
@@ -46,7 +46,7 @@ Do not use it when:
 - you are storing scratch output, logs, or anything the object model has no
   shape for;
 - you would be inventing content to fill a gap. Objects should record what is
-   real. An empty vault area is a fact about the project, not a task.
+  real. An empty vault area is a fact about the project, not a task.
 
 ## Keep session knowledge current
 
@@ -62,7 +62,41 @@ loop, status rules, permission boundaries, provenance, and examples. Within an
 authorized capture scope, save material updates without asking again for every
 object. A read-only task or explicit no-write instruction still wins. Do not
 turn a proposal into approval, a test definition into a passing run, or every
-chat message into a new object. Keep scratch/task activity in progress tracking.
+chat message into a new object. Keep task state in its existing progress owner;
+use Structree progress for new work when that is the selected tracker, not a
+second ledger alongside an existing tracker. Raw logs do not belong in memory.
+
+## Start With Intent, Not Schema Administration
+
+For ordinary memory and work tracking, use the compact tools first. Do not ask
+the harness to construct full objects or choose storage paths and timestamps.
+The schema-heavy instructions below apply to the twelve project-intent types
+and advanced low-level operations, not every memory or progress call.
+
+For an ordinary session: recall the relevant topic, resume known work (or find
+it with a small review page), then checkpoint material changes against the
+returned checksum. Create a plan only when no existing item owns the work.
+Capture reusable findings deliberately, separate from task activity. Use
+`session_context` when both a known work item and relevant knowledge are needed;
+omit its query only when knowledge retrieval is intentionally not requested.
+Do not load every schema or enumerate the vault as startup ceremony.
+
+| Need | First Tool |
+| --- | --- |
+| Relevant reusable knowledge | `memory_recall({ query })` |
+| Save a finding | `memory_remember({ title, body })` |
+| Correct known knowledge | `memory_revise({ id, expectedChecksum, body })` or intentional `changes` |
+| Review knowledge freshness/conflicts | `memory_review({})` |
+| Start work | `progress_plan({ title, outcome })` |
+| Record a checkpoint | `progress_update({ id, expectedChecksum, checkpoint: { note }, nextAction })` |
+| Find current or paused work | `progress_review({})` |
+| Resume a known work item | `progress_resume({ id })` |
+| Resume with topic-specific knowledge | `session_context({ id, query })` |
+
+See [agent workflows](references/agent-workflows.md) for status, evidence and
+continuation rules. Use only tools advertised by the connected server. An older
+server may need a host-managed restart to expose new tools; do not alter harness
+configuration or restart it without authorization.
 
 ## The object model
 
@@ -110,7 +144,7 @@ server name (`tools.structree.project_get`), and a host that prefixes local MCP
 tools presents them as `structree_project_get`. The full inventory is in
 `references/tool-reference.md`.
 
-### 1. Start from the definitions
+### 1. Discover Schemas For Advanced Object Operations
 
 Call `objects_definitions` first when you are new to the surface, and whenever a
 call is rejected for a field you believed was optional. It returns the live
