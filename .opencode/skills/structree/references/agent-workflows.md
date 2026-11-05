@@ -49,7 +49,7 @@ next action for `blocked`; `paused` work remains resumable.
 
 To revise a plan or interview rationale, supply only the intended `title`,
 `outcome`, `acceptance` or replacement `body` to `progress_update` and explain why
-in `checkpoint.note`. This adds one guarded checkpoint, preserves omitted fields,
+in `checkpoint.note`. This adds one checkpoint, preserves omitted fields,
 and does not imply approval or refreshed verification. `acceptance: []` and
 `body: ""` deliberately clear content. Read the existing body before extending
 it, because the body is replaced in full; use `work_item_get` to retrieve it.

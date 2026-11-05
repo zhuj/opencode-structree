@@ -19,7 +19,7 @@ does not establish a valid work item. Missing storage remains absent on a read.
 
 Prefer progress intent tools while connected. Authorized manual authoring must
 produce the current Structree schema, not an old progress template. File names
-are `<id>.md`; generate a stable lowercase portable UUID-based ID for new work.
+are `<id>.md`; choose a stable lowercase portable descriptive slug for new work.
 Preserve existing `id`, `name`, `createdAt`, unrelated fields and checkpoint history.
 Keep body and evidence unless intentionally revising them. While connected,
 prefer `progress_update` for title, outcome, acceptance and body revisions with
@@ -76,7 +76,8 @@ neither approve the revised plan nor refresh earlier verification.
 
 Filesystem editors do not automatically share the server's process lock or
 checksum guard. A hash check followed by an edit is not atomic compare-and-swap.
-Prefer guarded MCP writes when concurrent authors are possible. For manual
+Prefer MCP writes with `writes.checksumGuard` enabled when concurrent authors are
+possible; it defaults to false. For manual
 writes establish exclusive/coordinated ownership, retain original bytes, recheck
 the revision immediately before publication, create without clobbering, and use
 available safe atomic replacement for updates. If exclusive ownership or safe

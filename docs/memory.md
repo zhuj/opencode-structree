@@ -46,7 +46,7 @@ title candidates, and supersession inconsistencies. Its returned UTC `asOf`, sca
 and edge bounds make the limits explicit. It neither repairs nor merges records.
 Creation reports bounded same-title candidates but never silently reuses one.
 
-The project-memory skill defines one shared durable-entry contract with twelve
+The Structree skill's project-memory guidance defines one shared durable-entry contract with twelve
 primary categories. The application registers one `memory` type, stored under
 `memories/`, with category-specific schemas sharing the existing base-object
 hierarchy. This lets every memory relation address another memory entry,

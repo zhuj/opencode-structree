@@ -19,9 +19,10 @@ Do not pick one conflicting duplicate ID or treat a filename as verified identit
 ## Author The Same Record
 
 Prefer `memory_remember/revise` for normal writes: they provide mechanical
-bookkeeping, validation and guarded publication. Authorized offline authoring
+bookkeeping and validation. Checksum enforcement requires `writes.checksumGuard`;
+it defaults to false. Authorized offline authoring
 must produce a complete Structree object, not the legacy memory format. Use
-`<id>.md` with a stable lowercase portable ID, UUID-based when creating anew.
+`<id>.md` with a stable lowercase portable ID, preferably a descriptive slug for new records.
 Preserve `id` and `createdAt` on updates; use real RFC3339 timestamps, not the
 illustrative dates below. A different filename is not a supported ID rename.
 
@@ -75,7 +76,7 @@ a server lock, or stop another writer without permission.
 Under exclusive ownership, retain the original bytes, recheck the revision before
 publication, preserve unrelated fields/body/evidence, create without clobbering,
 and use an available safe atomic replacement for updates. If the available file
-tool cannot meet the required guarantee, use the guarded tool or report the
+tool cannot meet the required guarantee, use a tool with checksum enforcement enabled or report the
 blocker. Never repair partial or ambiguous sources implicitly through a rewrite.
 
 Use `objects_validate` after manual authoring when connected, or the project's

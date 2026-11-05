@@ -1,12 +1,3 @@
----
-name: progress-tracking
-description: "Track and resume project work through Structree progress tools and Markdown work-item sources. Use at the start of multi-step tasks, during decisions and discoveries, on restart, when blocked or pausing, and at verification or handoff. Also use for plans, task status, checkpoints, next actions and completion evidence."
-compatibility: Structree MCP progress tools preferred; authorized filesystem access supports reading and offline authoring of the same work-item sources.
-metadata:
-  storage: structree
-  scope: project-local
----
-
 # Progress Tracking
 
 Progress owns objectives, task state, intermediate reasoning, checkpoints and
@@ -57,7 +48,7 @@ The connected server selects its vault. There is no start/init/index ritual.
 | Find current work | `progress_review({ limit, offset, status, owner })` | Bounded source page, no activation |
 | Resume known work | `progress_resume({ id })` | Summary, revision and dependency findings |
 | Start authorized work | `progress_plan({ title, outcome })` | Planned/pending work with generated bookkeeping |
-| Checkpoint or change state | `progress_update({ id, expectedChecksum, checkpoint: { note }, nextAction })` | Guarded change with appended checkpoint |
+| Checkpoint or change state | `progress_update({ id, expectedChecksum, checkpoint: { note }, nextAction })` | Change with appended checkpoint; checksum enforcement is configurable |
 | Revise the plan or rationale | `progress_update({ id, expectedChecksum, title, outcome, acceptance, body, checkpoint: { note } })` | Supply only intended replacements and the reason |
 | Read full history/body | `work_item_get({ id })` | Complete source and checksum |
 | Combine work and knowledge | `session_context({ id, query })` | Explicit bounded handoff |
@@ -73,7 +64,8 @@ execute its implementation or verification steps.
 
 States are `planned`, `active`, `paused`, `blocked`, `completed`, `cancelled`.
 They are not the legacy active/blocked/completed/abandoned transition protocol.
-Use the latest checksum, not a `from` field. Do not infer a stricter transition
+Use the latest checksum, not a `from` field. `writes.checksumGuard` defaults to
+false, so coordinate concurrent writers unless enforcement is enabled. Do not infer a stricter transition
 graph than the current schema/tools enforce. `retiredAt` is separate from state.
 
 At a material decision, discovery, failed verification, pause, phase gate or
@@ -148,7 +140,7 @@ against concurrent/external writers. Inspect findings instead of overriding them
 
 ## Filesystem, Diagnostics And Boundaries
 
-Use [filesystem access](references/filesystem.md) for offline source reads and
+Use [filesystem access](progress-filesystem.md) for offline source reads and
 authoring. Missing tools do not authorize server startup, installation, model
 setup or configuration changes. Do not bypass a denied write through files.
 Source repair, resync, generated-output writes and deletion are separate actions.
@@ -162,10 +154,10 @@ or token budget: use small pages and full-source reads only as needed.
 
 ## Promote Deliberately
 
-Use `project-memory` skill for reusable, supported lessons within memory-write
+Use [project memory](project-memory.md) for reusable, supported lessons within memory-write
 authorization. Search for the existing knowledge owner, distill the conclusion,
 and cite the work ID/path and evidence with freshness limits. Do not copy the
 whole checkpoint log, promote on completion automatically, or turn an uncertain
-task hypothesis into current guidance. Use `structree` skill for canonical
+task hypothesis into current guidance. Use the main Structree guidance for canonical
 requirements, decisions, tests and their traceability rather than duplicating
 those approvals inside a progress record.

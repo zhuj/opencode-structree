@@ -75,7 +75,7 @@ Replaces a complete revision. This is not a patch.
 
 `id` and `createdAt` are immutable; sending a different value fails with
 `IMMUTABLE_ID` or `IMMUTABLE_CREATED_AT`. A stale checksum fails with
-`CHECKSUM_CONFLICT`.
+`CHECKSUM_CONFLICT` when `writes.checksumGuard` is enabled; it defaults to false.
 
 ### `<type>_delete`
 
@@ -147,7 +147,8 @@ after reading its current checksum:
 
 Returns the standard `{ type, object, body, path, checksum }` stored revision.
 All metadata, identity, creation time, relations and body are preserved.
-A stale checksum is refused with `CHECKSUM_CONFLICT`. On conflict, reread and
+A stale checksum is refused with `CHECKSUM_CONFLICT` when `writes.checksumGuard`
+is enabled; it defaults to false. On conflict, reread and
 reconcile the intended delta with the latest arrays rather than blindly
 resending a stale replacement. Partial sources fail with `VALIDATION_ERROR`;
 do not use these tools as repair or overwrite recovered fields as complete.

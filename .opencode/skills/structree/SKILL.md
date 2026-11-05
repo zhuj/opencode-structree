@@ -1,7 +1,7 @@
 ---
 name: structree
-description: "Use Structree for project knowledge, durable memory, resumable progress, and handoffs. Recall or revise findings, plan or checkpoint work, and maintain requirements, decisions, contracts, tests, evidence and reviews. Use during project conversations, interviews, implementation changes and verification, not only explicit requests to save notes; also use for impact, coverage and avoiding duplicate records."
-compatibility: Requires the structree MCP server to be registered in the session.
+description: "Use Structree for project knowledge, durable memory, resumable progress, plans, checkpoints, blockers and handoffs. Recall, record, revise or review project findings and maintain requirements, decisions, contracts, tests, evidence and reviews. Use at task start and during material discoveries, implementation, verification and handoff; also use for impact, coverage and avoiding duplicate records."
+compatibility: Structree MCP tools are preferred; authorized filesystem access can read and author the same memory and work-item sources offline.
 metadata:
   surface: mcp
   audience: agents
@@ -81,13 +81,20 @@ Capture reusable findings deliberately, separate from task activity. Use
 omit its query only when knowledge retrieval is intentionally not requested.
 Do not load every schema or enumerate the vault as startup ceremony.
 
+Use [project memory](references/project-memory.md) for knowledge ownership,
+recall, reconciliation and promotion. Use [progress tracking](references/progress-tracking.md)
+for work ownership, plans, checkpoints, lifecycle and verification. Both guides
+include links to authorized offline filesystem access to the same source records.
+For new memories and work items, prefer an optional descriptive slug `name` so
+the resulting ID and filename are meaningful; omit it to retain generated IDs.
+
 | Need | First Tool |
 | --- | --- |
 | Relevant reusable knowledge | `memory_recall({ query })` |
-| Save a finding | `memory_remember({ title, body })` |
+| Save a finding | `memory_remember({ name, title, body })` |
 | Correct known knowledge | `memory_revise({ id, expectedChecksum, body })` or intentional `changes` |
 | Review knowledge freshness/conflicts | `memory_review({})` |
-| Start work | `progress_plan({ title, outcome })` |
+| Start work | `progress_plan({ name, title, outcome })` |
 | Record a checkpoint | `progress_update({ id, expectedChecksum, checkpoint: { note }, nextAction })` |
 | Find current or paused work | `progress_review({})` |
 | Resume a known work item | `progress_resume({ id })` |
@@ -225,7 +232,9 @@ enumerate everything of one kind, and wrong when you want to find one object.
 ### 3. Read one object
 
 `<type>_get({ id })` returns the object, its Markdown body, its path and its
-checksum. The checksum is not decoration: it is what authorizes the next write.
+checksum. Supply the latest checksum on writes, but do not assume it is enforced:
+`writes.checksumGuard` defaults to false. Without the guard, coordinate writers
+before a replacement to avoid silently losing a newer revision.
 
 ### 4. Follow the relation graph
 
@@ -372,8 +381,8 @@ forward.
 
 **Delete** needs the id and the latest checksum.
 
-When you update, read first and write back what you read. The checksum is the
-guard against overwriting a revision someone else produced in between.
+When you update, read first and write back what you read. The supplied checksum
+guards against a stale revision only when `writes.checksumGuard` is enabled.
 
 #### Structured fields and focused updates
 
@@ -431,8 +440,9 @@ of an investigation that must not change anything.
   conflict: both files remain unchanged and the object is excluded with
   `RENAME_CONFLICT`. Nothing is overwritten. Subdirectories are still supported.
   Renaming an id is a new object with a broken link, not a rename.
-- **Checksums authorize writes.** Update and delete need the checksum of the
-  revision they replace. Read before you write.
+- **Checksum enforcement is configurable.** Update and delete require a checksum
+  argument, but reject stale values only when `writes.checksumGuard` is enabled
+  (it defaults to false). Read before writing and coordinate concurrent writers.
 - **Timestamps belong to the caller.** The server records what you send. Send
   the real time of the change.
 - **An empty array is not an empty identifier.** Use `[]` for a list with no
@@ -527,3 +537,5 @@ for the work.
    what it returns.
 - `references/session-capture.md`: continuous conversation/interview extraction,
   authored status changes, evidence limits, and checkpoint reconciliation.
+- `references/project-memory.md` and `references/progress-tracking.md`: detailed
+  memory and work-item practices, with offline filesystem access guidance.

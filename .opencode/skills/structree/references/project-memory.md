@@ -1,12 +1,3 @@
----
-name: project-memory
-description: "Maintain reusable project facts, constraints, lessons and reasoning through Structree memory tools and Markdown sources. Use at task start for relevant context, during material discoveries or decisions, and at handoff to reconcile durable knowledge. Also use for remembering, recalling, revising, reviewing or superseding project knowledge without mixing it with task activity."
-compatibility: Structree MCP memory tools preferred; authorized filesystem access supports reading and offline authoring of the same sources.
-metadata:
-  storage: structree
-  scope: project-local
----
-
 # Project Memory
 
 Memory holds reusable findings, constraints and reasoning, not task logs, raw
@@ -82,7 +73,8 @@ Use explicit fulltext mode to avoid model-dependent retrieval.
 3. Record the claim, basis, applicability, evidence and freshness limits in a
    concise body. Optional `category`, `scope`, `labels`, `evidences`, confidence
    and `reviewAfter` clarify meaning, not administrative prerequisites.
-4. Read the latest owner and revise against its checksum. On conflict, reread
+4. Read the latest owner and supply its checksum. `writes.checksumGuard` defaults
+   to false, so coordinate concurrent writers unless enforcement is enabled. On conflict, reread
    and reconcile intended changes; never fabricate a checksum or force overwrite.
 5. Inspect the write receipt for the intended ID/revision and any failure. Do not
    blindly retry a partial outcome or declare a save from an agent summary.
@@ -100,14 +92,14 @@ Memory relations target memory IDs only. A supersedes relation does not update
 the other record's lifecycle; reconcile both owners intentionally when authorized.
 
 Accepted architecture decisions and requirements retain their canonical
-project-intent owners. Use `structree` skill for ADRs, criteria, contracts,
+project-intent owners. Use the main Structree guidance for ADRs, criteria, contracts,
 relations and coverage. Memory may cite those owners, not create competing
 approval records. Use actual paths for structured evidence; when no artifact
 exists, attribute a source or observation in prose rather than inventing one.
 
 ## Filesystem And Permissions
 
-Use [filesystem access](references/filesystem.md) for offline reads, complete
+Use [filesystem access](memory-filesystem.md) for offline reads, complete
 frontmatter authoring and concurrency limits. Do not create a store merely to
 answer a read-only question. Missing tools do not authorize installation,
 configuration changes, server startup, resync, repair, model download or inference.
@@ -116,7 +108,7 @@ editing files. Treat secrets, private payloads and raw logs as out of scope.
 
 ## Task State And Promotion
 
-Use `progress-tracking` skill for objectives, checkpoints, blockers, next actions
+Use [progress tracking](progress-tracking.md) for objectives, checkpoints, blockers, next actions
 and temporary task hypotheses. Finishing work does not promote its log to memory.
 Plan changes and interview rationale belong in that work owner: use the enhanced
 `progress_update` for intended title/outcome/acceptance/body replacements with a
