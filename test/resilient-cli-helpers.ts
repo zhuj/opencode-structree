@@ -1,3 +1,5 @@
+import { withDeadline } from "./helpers/timing.ts";
+
 export interface RpcResponse {
   readonly id?: number;
   readonly error?: { readonly message?: string };
@@ -55,18 +57,10 @@ export async function exitBeforeDeadline(
   child: ReturnType<typeof Bun.spawn>,
   timeoutMs: number,
 ): Promise<number> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      child.exited,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => {
-          child.kill("SIGKILL");
-          reject(new Error("CLI process did not exit before its deadline."));
-        }, timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
+  return withDeadline(
+    child.exited,
+    timeoutMs,
+    "CLI process did not exit before its deadline.",
+    () => child.kill("SIGKILL"),
+  );
 }

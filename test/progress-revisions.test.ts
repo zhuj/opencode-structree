@@ -191,28 +191,33 @@ test.each([
 );
 
 test("a stale revision cannot replace body, plan fields or checkpoint history", async () => {
-  await withObjectFieldsClient(async ({ framework }) => {
-    const before = await authoredWork(framework);
-    await updateProgress(framework, {
-      id: before.object.id,
-      expectedChecksum: before.checksum,
-      body: "Current authored body",
-      checkpoint: { note: "Record the owner's new detail" },
-    });
-    const current = await framework.get("work_item", before.object.id);
-    await expect(
-      updateProgress(framework, {
+  await withObjectFieldsClient(
+    async ({ framework }) => {
+      const before = await authoredWork(framework);
+      await updateProgress(framework, {
         id: before.object.id,
         expectedChecksum: before.checksum,
-        title: "Stale title",
-        outcome: "Stale outcome",
-        acceptance: [],
-        body: "Stale body",
-        checkpoint: { note: "Attempting a revision against a superseded source" },
-      }),
-    ).rejects.toMatchObject({ code: "CHECKSUM_CONFLICT" });
-    expect(await framework.get("work_item", before.object.id)).toEqual(current);
-  }, progressDefinitions);
+        body: "Current authored body",
+        checkpoint: { note: "Record the owner's new detail" },
+      });
+      const current = await framework.get("work_item", before.object.id);
+      await expect(
+        updateProgress(framework, {
+          id: before.object.id,
+          expectedChecksum: before.checksum,
+          title: "Stale title",
+          outcome: "Stale outcome",
+          acceptance: [],
+          body: "Stale body",
+          checkpoint: { note: "Attempting a revision against a superseded source" },
+        }),
+      ).rejects.toMatchObject({ code: "CHECKSUM_CONFLICT" });
+      expect(await framework.get("work_item", before.object.id)).toEqual(current);
+    },
+    progressDefinitions,
+    undefined,
+    { checksumGuard: true },
+  );
 });
 
 test("combining a revision with explicit passed verification retains the evidence gate", async () => {

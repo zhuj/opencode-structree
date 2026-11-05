@@ -1,0 +1,12 @@
+# Coverage thresholds for `bun run test:coverage`.
+# Bun 1.4.4 enforces this floor for each reported file's lines and functions.
+# Module-specific targets below are aspirational, not additional enforced gates:
+# - src/lib/model/index.ts: 90
+# - src/lib/relations.ts: 80
+# - src/lib/relation-graph.ts: 80
+# - src/lib/registry.ts: 80
+# Only imported/instrumented files are measured by Bun. A passing subset does
+# not establish coverage for the full project; run `bun run test:coverage`.
+[test]
+coverageReporter = ["text"]
+coverageThreshold = 0.6

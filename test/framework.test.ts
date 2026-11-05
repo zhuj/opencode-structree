@@ -127,6 +127,7 @@ async function fixture(
     provider?: TestEmbeddingProvider;
     directory?: string;
     definitions?: readonly ObjectDefinition[];
+    checksumGuard?: boolean;
   } = {},
 ) {
   const directory =
@@ -141,6 +142,9 @@ async function fixture(
       embeddings: { provider: "disabled" },
       chunking: { size: 200 },
       sync: { watch: options.watch ?? false, debounceMs: 20, rescanIntervalMs: 0 },
+      ...(options.checksumGuard === undefined
+        ? {}
+        : { writes: { checksumGuard: options.checksumGuard } }),
     },
     ...(options.provider ? { embeddingProvider: options.provider } : {}),
   });
@@ -480,7 +484,7 @@ describe("filesystem-authoritative framework", () => {
   });
 
   test("CRUD persists exact schemas and separate body; invalid IDs cannot become paths", async () => {
-    const { framework, root } = await fixture();
+    const { framework, root } = await fixture({ checksumGuard: true });
     await expect(
       framework.create("project", project("../../outside:project")),
     ).rejects.toMatchObject({
@@ -532,8 +536,57 @@ describe("filesystem-authoritative framework", () => {
     expect(framework.status().objects).toBe(0);
   });
 
-  test("two concurrent writers cannot both consume the same checksum", async () => {
+  test("object updates and deletes do not require a checksum by default and return fresh checksums", async () => {
     const { framework } = await fixture();
+    const input = project();
+    const created = await framework.create("project", input, "# Design\n");
+    // Directly edit the vault file (filesystem is source of truth, the host edits it directly).
+    // The in-memory checksum is now stale; the server must accept a write anyway and return a fresh checksum.
+    const updated = await framework.update(
+      "project",
+      input.id,
+      { ...input, title: "Renamed", updatedAt: new Date("2026-10-19T12:00:00.000Z") },
+      "# Updated\n",
+      "stale",
+    );
+    expect(updated.checksum).toBeTruthy();
+    expect(updated.checksum).not.toBe(created.checksum);
+    expect(updated.body).toBe("# Updated\n");
+    expect((await framework.get("project", input.id)).checksum).toBe(updated.checksum);
+    expect(await framework.delete("project", input.id, "stale")).toEqual({
+      type: "project",
+      id: input.id,
+      deleted: true,
+    });
+    await expect(framework.get("project", input.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  test("guarded update and delete reject mismatched checksums", async () => {
+    const { framework } = await fixture({ checksumGuard: true });
+    const input = project();
+    const created = await framework.create("project", input, "# Design\n");
+    await expect(
+      framework.update(
+        "project",
+        input.id,
+        { ...input, title: "Nope", updatedAt: new Date("2026-10-19T12:00:00.000Z") },
+        "# Nope\n",
+        "stale",
+      ),
+    ).rejects.toMatchObject({ code: "CHECKSUM_CONFLICT" });
+    expect((await framework.get("project", input.id)).checksum).toBe(created.checksum);
+    await expect(framework.delete("project", input.id, "stale")).rejects.toMatchObject({
+      code: "CHECKSUM_CONFLICT",
+    });
+    await expect(framework.delete("project", input.id, created.checksum)).resolves.toEqual({
+      type: "project",
+      id: input.id,
+      deleted: true,
+    });
+  });
+
+  test("two concurrent writers cannot both consume the same checksum", async () => {
+    const { framework } = await fixture({ checksumGuard: true });
     const created = await framework.create("project", project());
     const results = await Promise.allSettled([
       framework.update("project", "p-1", project("p-1", "A"), "A", created.checksum),

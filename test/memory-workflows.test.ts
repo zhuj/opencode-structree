@@ -14,6 +14,31 @@ const serverFactory: Parameters<typeof withObjectFieldsClient>[2] = (framework) 
   return server;
 };
 
+test("remember uses a descriptive slug for identity and rejects duplicates and unsafe names", async () => {
+  await withObjectFieldsClient(
+    async ({ client }) => {
+      const args = { name: "Source-Evidence", title: "Evidence", body: "Observed." };
+      const created = await client.callTool({ name: "memory_remember", arguments: args });
+      expect(created.isError).not.toBe(true);
+      expect(created.structuredContent).toHaveProperty("object.id", "source-evidence");
+      expect(created.structuredContent).toHaveProperty(
+        "path",
+        expect.stringMatching(/\/source-evidence\.md$/),
+      );
+      const duplicate = await client.callTool({ name: "memory_remember", arguments: args });
+      expect(duplicate.structuredContent).toHaveProperty("error.code", "ALREADY_EXISTS");
+      for (const name of ["../escape", "con", "two words", ""]) {
+        expect(
+          (await client.callTool({ name: "memory_remember", arguments: { ...args, name } }))
+            .isError,
+        ).toBe(true);
+      }
+    },
+    memoryDefinitions,
+    serverFactory,
+  );
+});
+
 test("remember supplies bookkeeping without inventing approval; revise preserves omitted content", async () => {
   await withObjectFieldsClient(
     async ({ client, framework }) => {
@@ -43,6 +68,7 @@ test("remember supplies bookkeeping without inventing approval; revise preserves
       const listed = await framework.list("memory");
       const source = listed.objects[0];
       if (!source) throw new Error("Remember did not create a source");
+      expect(source.object.id).toMatch(/^memory-[0-9a-f-]{36}$/);
       expect(source.object).not.toHaveProperty("evidences");
       const revised = await client.callTool({
         name: "memory_revise",
@@ -68,6 +94,7 @@ test("remember supplies bookkeeping without inventing approval; revise preserves
     },
     memoryDefinitions,
     serverFactory,
+    { checksumGuard: true },
   );
 });
 

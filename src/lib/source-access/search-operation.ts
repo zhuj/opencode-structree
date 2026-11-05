@@ -87,6 +87,7 @@ export function createSourceSearch(context: SourceSearchContext) {
             observedCount: 0,
             issues: [],
             recoveryCode: code,
+            signal: inner,
           });
         const types = request.types === undefined ? undefined : [...new Set(request.types)];
         const scans: ScanResult[] = [];
@@ -109,6 +110,7 @@ export function createSourceSearch(context: SourceSearchContext) {
           observedCount: documents.length,
           issues,
           recoveryCode: code,
+          signal: inner,
         });
       }, signal);
     };

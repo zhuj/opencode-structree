@@ -55,6 +55,35 @@ test("default application registers generic memory CRUD and eight specialized to
   });
 });
 
+test("generic memory and work-item creation use the explicitly authored id as filename", async () => {
+  await withObjectFieldsClient(async ({ client }) => {
+    const planned = await client.callTool({
+      name: "progress_plan",
+      arguments: { title: "Template", outcome: "Create a complete work item" },
+    });
+    const plan = planned.structuredContent as Record<string, unknown> | undefined;
+    if (!plan || typeof plan.id !== "string") throw new Error("Missing planned id");
+    const source = await client.callTool({ name: "work_item_get", arguments: { id: plan.id } });
+    const object = (source.structuredContent as Record<string, unknown> | undefined)?.object;
+    if (!object || typeof object !== "object" || Array.isArray(object))
+      throw new Error("Missing work item");
+    for (const [tool, authored] of [
+      ["memory_create", memoryObject({ id: "named-memory", name: "named-memory" })],
+      ["work_item_create", { ...object, id: "named-work", name: "named-work" }],
+    ] as const) {
+      const args = { object: authored };
+      const created = await client.callTool({ name: tool, arguments: args });
+      expect(created.isError).not.toBe(true);
+      expect(created.structuredContent).toHaveProperty(
+        "path",
+        expect.stringMatching(/\/named-(memory|work)\.md$/),
+      );
+      const duplicate = await client.callTool({ name: tool, arguments: args });
+      expect(duplicate.structuredContent).toHaveProperty("error.code", "ALREADY_EXISTS");
+    }
+  });
+});
+
 test("context filters a source page without claiming matching totals, expiration or investigation certainty", async () => {
   await withObjectFieldsClient(async ({ client, framework }) => {
     await framework.create("memory", memoryObject({ id: "a", status: "draft" }));

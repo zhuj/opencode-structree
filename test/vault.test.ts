@@ -482,4 +482,44 @@ describe("generic Markdown vault", () => {
     expect(await fs.readFile(path.join(root, "a.md"), "utf8")).toBe("before");
     expect(await fs.readdir(root)).toEqual(["a.md"]);
   });
+
+  test("vault walk honors the total scan budget and marks the scan incomplete", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "object-mcp-vault-budget-"));
+    const root = path.join(directory, "vault");
+    const files = new ConfinedFilesystem(root, { maxScanTotalCharacters: 100 });
+    resources.push({ directory, files });
+    await files.initialize();
+    for (let index = 0; index < 5; index++)
+      await files.write(`f${index}.md`, "x".repeat(50), { expectedChecksum: null });
+    const scan = await files.walk();
+    expect(scan.complete).toBe(false);
+    expect(scan.files.length).toBe(2);
+    expect(scan.files.map((file) => file.path)).toEqual(["f0.md", "f1.md"]);
+    expect(scan.issues).toContainEqual(
+      expect.objectContaining({ code: "SCAN_BUDGET", path: "f2.md" }),
+    );
+    expect(await files.walk()).toEqual(scan);
+  });
+
+  test("vault walk under budget is byte-identical to an unlimited walk", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "object-mcp-vault-under-"));
+    const root = path.join(directory, "vault");
+    await fs.mkdir(root);
+    for (let index = 0; index < 3; index++)
+      await fs.writeFile(path.join(root, `f${index}.md`), "x".repeat(50));
+    const budgeted = new ConfinedFilesystem(root, { maxScanTotalCharacters: 1000 });
+    const unbounded = new ConfinedFilesystem(root, {});
+    resources.push({ directory, files: budgeted });
+    await budgeted.initialize();
+    await unbounded.initialize();
+    try {
+      const expected = await unbounded.walk();
+      const actual = await budgeted.walk();
+      expect(actual).toEqual(expected);
+      expect(actual.complete).toBe(true);
+      expect(actual.issues).toEqual([]);
+    } finally {
+      await unbounded.close();
+    }
+  });
 });

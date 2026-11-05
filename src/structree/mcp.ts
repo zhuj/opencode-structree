@@ -103,7 +103,7 @@ export function registerStructreeTools(
     "objects_fields_update",
     {
       description:
-        "Replace only explicitly supplied typed top-level fields on a complete source object. Omitted fields, every metadata value, unrelated header fields and the latest body are preserved. [] clears a list; decision:null removes an ADR decision. Decision updates are ADR-only. Supply at least one field, a source checksum and your updatedAt timestamp. No legacy metadata is copied, no citation is dereferenced, and evidence never implies test success. Writes use the normal checksum-guarded update path.",
+        "Replace only explicitly supplied typed top-level fields on a complete source object. Omitted fields, every metadata value, unrelated header fields and the latest body are preserved. [] clears a list; decision:null removes an ADR decision. Decision updates are ADR-only. Supply at least one field, a source checksum and your updatedAt timestamp. No legacy metadata is copied, no citation is dereferenced, and evidence never implies test success. The source checksum is verified when writes.checksumGuard is enabled.",
       inputSchema: input.schema(updateInput),
       outputSchema: effectMcpSchema(
         Schema.Struct({

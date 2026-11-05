@@ -82,6 +82,7 @@ test("CLI returns diagnostics for invalid sources without normalizing them", asy
       expect(result.code).toBe(2);
       expect(JSON.parse(result.stdout)).toMatchObject({ valid: false });
       expect(JSON.parse(result.stdout).diagnostics.length).toBeGreaterThan(0);
+      expect(JSON.parse(result.stdout).diagnostics[0]?.code).toEqual(expect.any(String));
     }
     expect(await readFile(filename, "utf8")).toBe(source);
     expect(await readdir(f.root)).toEqual(["config.json", "vault"]);

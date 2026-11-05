@@ -8,7 +8,16 @@ export interface ObjectRef<Type extends string = string, Id extends string = str
   readonly type: Type;
   readonly id: Id;
 }
-export type RelationKind = "depends" | "uses" | "justifies" | "contains" | "owns" | "relates";
+/** Every relation kind, in the order relation surfaces list them. Canonical source for `RelationKind`. */
+export const RELATION_KIND_ORDER = Object.freeze([
+  "depends",
+  "uses",
+  "justifies",
+  "contains",
+  "owns",
+  "relates",
+] as const);
+export type RelationKind = (typeof RELATION_KIND_ORDER)[number];
 export interface SourceProvenance {
   readonly root: "vault";
   readonly path: string;

@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { RELATION_KIND_ORDER } from "../lib/model/index.ts";
 import {
   MemoryCategorySchema,
   MemoryConfidenceSchema,
@@ -110,7 +111,7 @@ const node = Schema.Struct({
   name: Schema.String,
   title: Schema.String,
 });
-const kind = Schema.Literals(["depends", "uses", "justifies", "contains", "owns", "relates"]);
+const kind = Schema.Literals(RELATION_KIND_ORDER);
 const endpoints = { kind, field: Schema.String, from: node, to: node };
 export const MemoryRelatedOutputSchema = Schema.Struct({
   root: node,

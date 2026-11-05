@@ -83,6 +83,33 @@ test("vault confinement modes are configurable and partial synchronization setti
   }
 });
 
+test("writes checksum guard defaults to false and merges through layers", async () => {
+  expect(defineConfig({}).writes).toEqual({ checksumGuard: false });
+  expect(defineConfig({ writes: { checksumGuard: true } }).writes).toEqual({
+    checksumGuard: true,
+  });
+  expect(() => defineConfig({ writes: { checksumGuard: "yes" as unknown as boolean } })).toThrow(
+    "writes.checksumGuard",
+  );
+  await withScratchDirectory(async (directory) => {
+    const yamlFile = await writeYamlFile(
+      directory,
+      "local.yaml",
+      "writes:\n  checksumGuard: true\n",
+    );
+    const jsonFile = await writeJsonFile(directory, "config.json", {
+      writes: { checksumGuard: false },
+    });
+    const config = await loadConfig(jsonFile, {
+      projectRoot: directory,
+      localConfigFile: yamlFile,
+    });
+    expect(config.writes).toEqual({ checksumGuard: true });
+    const defaults = await loadDefaultConfig({ projectRoot: directory, localConfigFile: yamlFile });
+    expect(defaults.writes).toEqual({ checksumGuard: true });
+  });
+});
+
 test("MCP input repair defaults are bounded and nested overrides preserve other settings", () => {
   const initial = defineConfig();
   expect(initial.mcp.inputRepair).toEqual({
@@ -469,5 +496,53 @@ test("a local YAML configuration can carry the literal OpenAI API key", async ()
     });
     if (config.embeddings.provider !== "openai") throw new Error("Expected the openai provider.");
     expect(config.embeddings.apiKey).toBe("local-literal-key");
+  });
+});
+
+test("sync maxScanTotalCharacters defaults to 256 MiB, validates as a positive integer, and layers", async () => {
+  expect(defineConfig().sync.maxScanTotalCharacters).toBe(268_435_456);
+  expect(defineConfig({ sync: { maxScanTotalCharacters: 1000 } }).sync.maxScanTotalCharacters).toBe(
+    1000,
+  );
+  expect(defineConfig({ sync: { maxScanTotalCharacters: 1000 } }).sync.maxFileBytes).toBe(
+    5_000_000,
+  );
+  for (const maxScanTotalCharacters of [
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    "100",
+    null,
+  ]) {
+    expect(() =>
+      defineConfig({ sync: { maxScanTotalCharacters } } as unknown as FrameworkConfigInput),
+    ).toThrow("Invalid configuration");
+  }
+  await withScratchDirectory(async (directory) => {
+    const yamlFile = await writeYamlFile(
+      directory,
+      path.join(LOCAL_CONFIG_RELATIVE_PATH),
+      "sync:\n  maxScanTotalCharacters: 12345\n",
+    );
+    const config = await loadDefaultConfig({ projectRoot: directory, localConfigFile: yamlFile });
+    expect(config.sync.maxScanTotalCharacters).toBe(12345);
+    expect(yamlFile).toBe(path.join(directory, LOCAL_CONFIG_RELATIVE_PATH));
+  });
+});
+
+test("writes section default-merges like the other sections", async () => {
+  expect(defineConfig({ writes: {} }).writes.checksumGuard).toBe(false);
+  await withScratchDirectory(async (directory) => {
+    const jsonFile = await writeJsonFile(directory, "config.json", { writes: {} });
+    const yamlFile = await writeYamlFile(
+      directory,
+      path.join(LOCAL_CONFIG_RELATIVE_PATH),
+      "writes:\n  checksumGuard: true\n",
+    );
+    const config = await loadConfig(jsonFile, { projectRoot: directory });
+    expect(config.writes.checksumGuard).toBe(true);
+    expect(yamlFile).toBe(path.join(directory, LOCAL_CONFIG_RELATIVE_PATH));
   });
 });

@@ -3,12 +3,13 @@ import { Schema } from "effect";
 import { defaultConfig } from "./config.ts";
 import { effectMcpSchema } from "./mcp-input.ts";
 import { createMcpToolContext, type McpToolOptions } from "./mcp-tool-context.ts";
+import { RELATION_KIND_ORDER } from "./model/index.ts";
 import {
   LIST_LIMIT_DEFAULT,
   LIST_LIMIT_MAX,
   type ObjectFacade,
   RELATIONS_DEPTH_MAX,
-} from "./types";
+} from "./types.ts";
 
 export { effectMcpSchema } from "./mcp-input.ts";
 export type { McpToolOptions } from "./mcp-tool-context.ts";
@@ -22,21 +23,14 @@ const IdInput = Schema.Struct({
 const EmptyInput = Schema.Record(Schema.String, Schema.Never);
 const NonnegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 /** The relation kinds the tool can follow, in the order the tool lists them. */
-const RELATION_KIND_NAMES = [
-  "depends",
-  "uses",
-  "justifies",
-  "contains",
-  "owns",
-  "relates",
-] as const;
+const RELATION_KIND_NAMES = RELATION_KIND_ORDER;
 const DeleteInput = Schema.Struct({
   id: Schema.NonEmptyString.annotate({
     description: "Object identifier. Must be a portable file name of at most 200 UTF-8 bytes.",
   }),
   expectedChecksum: Schema.NonEmptyString.annotate({
     description:
-      "Checksum returned by the latest get/list/create/update; prevents overwriting a newer revision.",
+      "Checksum returned by the latest get/list/create/update; when writes.checksumGuard is enabled, prevents overwriting a newer revision.",
   }),
 });
 /** The bounds a facade advertises; a facade without configuration falls back to the defaults. */
@@ -295,7 +289,7 @@ const DEFINITION_GUIDANCE = [
   "Object ids are stable and unique within their type. Reads prefer a usable frontmatter id; otherwise a lowercase filename stem supplies an explicitly inferred identity. The scanner may align filenames only for validated objects, never for partial documents.",
   "Readable Markdown with missing, malformed or schema-incomplete frontmatter is returned as partial with recovered object fields, identity origin and issues; no dates, relations or other required domain fields are invented. Direct partial get includes the original raw text; includeBody:false listings omit both body and raw. Partial documents participate in search after reconciliation and are never automatically repaired or renamed.",
   "Use the type's get tool for a known id; do not list a whole type to find one object.",
-  "Update and delete require a validated source revision and its latest checksum. Partial sources must be repaired explicitly before mutation; create/update inputs remain complete and schema-validated.",
+  "Update and delete operate on a validated source revision; partial sources must be repaired explicitly before mutation, and create/update inputs remain complete and schema-validated. When writes.checksumGuard is enabled, a latest checksum is also required on update and delete.",
   "Timestamps are supplied by the caller; the id and createdAt are immutable.",
   "Relation targets are not validated: a link to an object that does not exist is stored as written.",
   "The description field is a one-line summary; the body is the Markdown content.",
@@ -412,7 +406,7 @@ export function registerObjectTools(
     server.registerTool(
       `${definition.name}_update`,
       {
-        description: `Replace a complete ${definition.name} object and Markdown body. The identifier and createdAt timestamp are immutable. Identifiers are lowercased and must be portable file names. Supply the latest checksum and your updatedAt timestamp. ${WORKFLOW_CLAUSE}`,
+        description: `Replace a complete ${definition.name} object and Markdown body. The identifier and createdAt timestamp are immutable. Identifiers are lowercased and must be portable file names. Supply your updatedAt timestamp and the checksum of the revision being replaced (verified when writes.checksumGuard is enabled). ${WORKFLOW_CLAUSE}`,
         inputSchema: input.schema(
           Schema.Struct({
             id: Schema.NonEmptyString.annotate({
@@ -455,7 +449,7 @@ export function registerObjectTools(
     server.registerTool(
       `${definition.name}_delete`,
       {
-        description: `Delete a ${definition.name} Markdown file and its derived search data. Supply its latest checksum. ${WORKFLOW_CLAUSE}`,
+        description: `Delete a ${definition.name} Markdown file and its derived search data. Supply its checksum (verified when writes.checksumGuard is enabled). ${WORKFLOW_CLAUSE}`,
         inputSchema: input.schema(DeleteInput),
         outputSchema: effectMcpSchema(
           Schema.Struct({

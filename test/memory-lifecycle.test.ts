@@ -61,66 +61,76 @@ test("status update preserves every unrelated field and body, appending only a c
 });
 
 test("status mismatch, stale checksum and blank reason cannot change source bytes", async () => {
-  await withObjectFieldsClient(async ({ client, framework, directory }) => {
-    const stored = await framework.create("memory", memoryObject(), "Original body");
-    const filename = path.join(directory, "objects", stored.path);
-    const raw = await readFile(filename, "utf8");
-    const args = {
-      id: stored.object.id,
-      from: "active",
-      to: "obsolete",
-      reason: "Not applicable",
-      updatedAt: timestamp,
-      expectedChecksum: stored.checksum,
-    };
-    for (const [change, code] of [
-      [{ from: "draft" }, "CONFLICT"],
-      [{ expectedChecksum: "stale" }, "CHECKSUM_CONFLICT"],
-    ] as const) {
-      const result = await client.callTool({
-        name: "memory_set_status",
-        arguments: { ...args, ...change },
-      });
-      expect(result.structuredContent).toHaveProperty("error.code", code);
-      expect(await readFile(filename, "utf8")).toBe(raw);
-    }
-    const blank = await client.callTool({
-      name: "memory_set_status",
-      arguments: { ...args, reason: " \n " },
-    });
-    expect(blank.isError).toBe(true);
-    expect(await readFile(filename, "utf8")).toBe(raw);
-  }, memoryDefinitions);
-});
-
-test("concurrent status writes preserve the winning source revision", async () => {
-  await withObjectFieldsClient(async ({ client, framework }) => {
-    const stored = await framework.create("memory", memoryObject(), "Original");
-    const update = framework.update.bind(framework);
-    framework.update = async (...args) => {
-      await update(
-        "memory",
-        stored.object.id,
-        { ...stored.object, title: "Concurrent revision" },
-        "Winning body",
-        stored.checksum,
-      );
-      return update(...args);
-    };
-    const result = await client.callTool({
-      name: "memory_set_status",
-      arguments: {
+  await withObjectFieldsClient(
+    async ({ client, framework, directory }) => {
+      const stored = await framework.create("memory", memoryObject(), "Original body");
+      const filename = path.join(directory, "objects", stored.path);
+      const raw = await readFile(filename, "utf8");
+      const args = {
         id: stored.object.id,
         from: "active",
         to: "obsolete",
-        reason: "Explicit change",
+        reason: "Not applicable",
         updatedAt: timestamp,
         expectedChecksum: stored.checksum,
-      },
-    });
-    expect(result.structuredContent).toHaveProperty("error.code", "CHECKSUM_CONFLICT");
-    expect((await framework.get("memory", stored.object.id)).body).toBe("Winning body");
-  }, memoryDefinitions);
+      };
+      for (const [change, code] of [
+        [{ from: "draft" }, "CONFLICT"],
+        [{ expectedChecksum: "stale" }, "CHECKSUM_CONFLICT"],
+      ] as const) {
+        const result = await client.callTool({
+          name: "memory_set_status",
+          arguments: { ...args, ...change },
+        });
+        expect(result.structuredContent).toHaveProperty("error.code", code);
+        expect(await readFile(filename, "utf8")).toBe(raw);
+      }
+      const blank = await client.callTool({
+        name: "memory_set_status",
+        arguments: { ...args, reason: " \n " },
+      });
+      expect(blank.isError).toBe(true);
+      expect(await readFile(filename, "utf8")).toBe(raw);
+    },
+    memoryDefinitions,
+    undefined,
+    { checksumGuard: true },
+  );
+});
+
+test("concurrent status writes preserve the winning source revision", async () => {
+  await withObjectFieldsClient(
+    async ({ client, framework }) => {
+      const stored = await framework.create("memory", memoryObject(), "Original");
+      const update = framework.update.bind(framework);
+      framework.update = async (...args) => {
+        await update(
+          "memory",
+          stored.object.id,
+          { ...stored.object, title: "Concurrent revision" },
+          "Winning body",
+          stored.checksum,
+        );
+        return update(...args);
+      };
+      const result = await client.callTool({
+        name: "memory_set_status",
+        arguments: {
+          id: stored.object.id,
+          from: "active",
+          to: "obsolete",
+          reason: "Explicit change",
+          updatedAt: timestamp,
+          expectedChecksum: stored.checksum,
+        },
+      });
+      expect(result.structuredContent).toHaveProperty("error.code", "CHECKSUM_CONFLICT");
+      expect((await framework.get("memory", stored.object.id)).body).toBe("Winning body");
+    },
+    memoryDefinitions,
+    undefined,
+    { checksumGuard: true },
+  );
 });
 
 test("all explicit lifecycle pairs are allowed without changing confidence, retirement or targets", async () => {

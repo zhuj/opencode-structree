@@ -77,6 +77,7 @@ export class FileStore {
       );
     this.files = new ConfinedFilesystem(config.root, {
       maxFileBytes: config.sync.maxFileBytes,
+      maxScanTotalCharacters: config.sync.maxScanTotalCharacters,
       confinement: config.sync.confinement,
       readOnly: this.readOnly,
       ...(options.readBuffer ? { readBuffer: options.readBuffer } : {}),
@@ -244,7 +245,10 @@ export class FileStore {
     if (!scan.complete)
       throw new FrameworkError(
         "SCAN",
-        "Cannot establish object identity while its directory cannot be fully read.",
+        scan.issues.some((issue) => issue.code === "SCAN_BUDGET")
+          ? "Cannot establish object identity because the scan stopped at the configured sync.maxScanTotalCharacters budget."
+          : "Cannot establish object identity while its directory cannot be fully read.",
+        { issues: scan.issues },
       );
     const targetKey = objectKey(type, id);
     const found = scan.documents.find((document) => document.key === targetKey);
@@ -309,11 +313,20 @@ export class FileStore {
       throw new FrameworkError("IMMUTABLE_ID", "An update cannot change object.id.");
     if (object.createdAt.getTime() !== current.object.createdAt.getTime())
       throw new FrameworkError("IMMUTABLE_CREATED_AT", "An update cannot change createdAt.");
-    if (current.checksum !== expectedChecksum)
+    if (this.config.writes.checksumGuard && current.checksum !== expectedChecksum)
       throw new FrameworkError("CHECKSUM_CONFLICT", "The file changed since it was read.", {
         actualChecksum: current.checksum,
       });
-    await this.files.write(current.path, element.raw, { expectedChecksum }, signal);
+    await this.files.write(
+      current.path,
+      element.raw,
+      {
+        // Unguarded writes still race against the current bytes: a null expectation would require
+        // an absent file, so overwrite with the checksum just re-read from the live document.
+        expectedChecksum: this.config.writes.checksumGuard ? expectedChecksum : current.checksum,
+      },
+      signal,
+    );
     return this.source(type, { path: current.path, ...element });
   }
 
@@ -330,11 +343,15 @@ export class FileStore {
         "SOURCE_CONFLICT",
         "Partial documents must be repaired explicitly before mutation.",
       );
-    if (current.checksum !== expectedChecksum)
+    if (this.config.writes.checksumGuard && current.checksum !== expectedChecksum)
       throw new FrameworkError("CHECKSUM_CONFLICT", "The file changed since it was read.", {
         actualChecksum: current.checksum,
       });
-    await this.vault(type).delete(current.path, expectedChecksum, signal);
+    await this.vault(type).delete(
+      current.path,
+      this.config.writes.checksumGuard ? expectedChecksum : current.checksum,
+      signal,
+    );
   }
 
   async withProcessLock<A>(work: () => Promise<A>, signal?: AbortSignal): Promise<A> {

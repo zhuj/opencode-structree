@@ -52,6 +52,7 @@ describe("tolerant Markdown codec", () => {
       if (!result.partial) throw new Error("Expected a partial document");
       expect(result.json).toEqual({});
       expect(result.issues.length).toBeGreaterThan(0);
+      expect(result.issues[0]?.code).toBe("FRONTMATTER");
     });
   }
 
@@ -70,6 +71,9 @@ describe("tolerant Markdown codec", () => {
       expect(result.partial).toBe(true);
       if (!result.partial) throw new Error("Expected a partial document");
       expect(result.issues.length).toBeGreaterThan(0);
+      expect(
+        result.issues.every((i) => ["YAML", "FRONTMATTER", "VALIDATION"].includes(i.code)),
+      ).toBe(true);
       if (header.startsWith("id:"))
         expect(result.json).toMatchObject({ id: "explicit", title: "Recoverable" });
       if (header.startsWith("title:")) expect(result.json).toEqual({ title: "Recoverable" });

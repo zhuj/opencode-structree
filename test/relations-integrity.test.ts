@@ -82,6 +82,7 @@ describe("relation graph integrity", () => {
     });
     const finding = response.findings.find((entry) => entry.code === "DANGLING_TARGET");
     expect(finding).toBeDefined();
+    expect(finding?.code).toBe("DANGLING_TARGET");
     expect(finding?.message).toContain("no-such-adr");
   });
 
@@ -99,6 +100,7 @@ describe("relation graph integrity", () => {
     });
     const finding = response.findings.find((entry) => entry.code === "TARGET_TYPE_MISMATCH");
     expect(finding).toBeDefined();
+    expect(finding?.code).toBe("TARGET_TYPE_MISMATCH");
     expect(finding?.message).toContain("entity");
     // The link is still followed, so the blast radius does not lose a real edge.
     expect(response.affected.map((entry) => `${entry.type}:${entry.id}`)).toEqual(["entity:e-1"]);
@@ -137,6 +139,7 @@ describe("relation graph integrity", () => {
     expect(filtered.affected).toHaveLength(0);
     // The traversal still passes through the excluded types.
     expect(filtered.totalEdges).toBeGreaterThan(0);
+    expect(filtered.totalEdges).toBe(3);
   });
 
   test("a duplicated root id takes precedence over unrelated scan issues", async () => {

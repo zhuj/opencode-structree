@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { CreationNameSchema } from "../creation-name.ts";
 import {
   ProgressVerificationFields,
   progressText,
@@ -10,6 +11,7 @@ import {
 } from "./schemas.ts";
 
 export const ProgressPlanRequestSchema = Schema.Struct({
+  name: Schema.optionalKey(CreationNameSchema),
   title: progressText(200),
   outcome: progressText(4000),
   acceptance: Schema.optionalKey(WorkAcceptanceSchema),

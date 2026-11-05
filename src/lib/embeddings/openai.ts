@@ -70,12 +70,11 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     }
     this.dimensions = config.dimensions;
     this.fetcher = dependencies.fetch ?? globalThis.fetch;
-    // A literal key wins over the environment variable; neither value enters the fingerprint.
+    // An injected key wins, then the environment variable; the literal key is a documented fallback. No value enters the fingerprint.
     const injected = dependencies.apiKey;
     this.resolveApiKey = () => {
-      if (config.apiKey) return config.apiKey;
-      if (injected) return injected();
-      return process.env[config.apiKeyEnv];
+      if (injected) return injected() ?? process.env[config.apiKeyEnv] ?? config.apiKey;
+      return process.env[config.apiKeyEnv] ?? config.apiKey;
     };
     // An empty environment variable name selects a keyless endpoint.
     this.requiresApiKey = config.apiKeyEnv !== "";

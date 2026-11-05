@@ -81,7 +81,11 @@ test("application fields exports and composition do not leak through the library
 });
 
 test("library and model entrypoints exclude field values and erased application type exports", async () => {
-  expect(Object.keys(model).sort()).toEqual(["createObjectGraph", "referenceKey"]);
+  expect(Object.keys(model).sort()).toEqual([
+    "RELATION_KIND_ORDER",
+    "createObjectGraph",
+    "referenceKey",
+  ]);
   for (const entry of ["../src/lib/index.ts", "../src/lib/model/index.ts"]) {
     const source = await readFile(new URL(entry, import.meta.url), "utf8");
     for (const name of [...fieldSchemas, ...fieldTypes]) {
@@ -226,5 +230,6 @@ test("CLI composition exposes all 96 tools and checksum-guarded field updates", 
     },
     coreDefinitions,
     (facade) => createMaterializationServer(facade, facade.config),
+    { checksumGuard: true },
   );
 });

@@ -85,12 +85,25 @@ Successful repairs are reported at `response._meta["object-mcp/input-repair"].re
 | `sync.debounceMs` | `150` | Coalesce related notifications before reconciling. |
 | `sync.rescanIntervalMs` | `60000` | Periodic reconciliation interval; zero disables it. |
 | `sync.maxFileBytes` | `5000000` | Maximum raw UTF-8 object file size, enforced for reads and tool writes. |
+| `sync.maxScanTotalCharacters` | `268435456` | Maximum accumulated decoded source text one directory scan may collect. When a scan would exceed the budget it stops, reports `complete: false` with a `SCAN_BUDGET` issue at the offending path, and keeps the files it already collected; already-collected files are never truncated. Budgets are counted in decoded characters, not UTF-8 bytes. The budget is tracked in decoded UTF-16 code units of the collected strings. When a scan is budget-truncated, identity-dependent operations (get, create, update, delete, and the relations query) fail closed with a SCAN or SOURCE_CONFLICT error rather than risking a wrong answer, while search and listing degrade gracefully. |
 | `sync.concurrency` | `2` | Maximum concurrent embedding workers. ONNX calls serialize inside their shared model provider. |
 | `sync.lockTimeoutMs` | `10000` | Maximum asynchronous wait for the shared source coordination lock. |
 | `chunking.size` | `1200` | Retrieval chunk size in Unicode code points. |
 | `chunking.overlap` | `0.1` | Fraction of a full chunk repeated in the next chunk, rounded down to whole code points. |
 
 Changing chunk size or overlap invalidates embedding freshness even when the source checksum is unchanged. Core object schemas do not contain configuration defaults; required domain fields must still be supplied.
+
+## Writes
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `writes.checksumGuard` | `false` | When `true`, `update`/`delete` and specialized memory/progress mutations compare the supplied `expectedChecksum` against the current file and reject mismatches with `CHECKSUM_CONFLICT`. When `false`, supplied checksums are accepted without verification (the host agent may have edited the vault file directly), while fresh checksums are still returned in every response. The `expectedChecksum` field stays in all input schemas either way. |
+
+The filesystem is the source of truth and the host agent edits vault files directly, so strict checksum verification is not the default. Set `writes.checksumGuard: true` in the JSON `--config` file, the `.local/.structree/config.yaml` override, or `defineConfig({ writes: { checksumGuard: true } })` to restore strict behavior.
+
+The framework reads configuration at startup; a running server picks the flag up on restart. The flag controls only object write-path checksums; search-result revalidation and embedding-fingerprint checksums are unrelated and untouched.
+
+With the guard off, last-writer-wins is the accepted semantic: an interleaved external edit between a tool's read and its write is overwritten without error, and a write that still races a change between the framework's own re-read and publish can fail with `CHECKSUM_CONFLICT` from the storage layer. The explicit source-repair flow keeps its own plan-checksum authorization and is not governed by this flag.
 
 ## Search
 
@@ -140,7 +153,7 @@ Set `embeddings.provider` to `openai`. The provider selection chooses these defa
 | `dimensions` | `1536` | Requested and validated output dimensions. |
 | `baseUrl` | `https://api.openai.com/v1` | Embeddings endpoint base URL. An external OpenAI API compatible provider is selected with this value; the request is posted to `<baseUrl>/embeddings`. Redirects, embedded credentials, query strings, and fragments are rejected. |
 | `apiKeyEnv` | `OPENAI_API_KEY` | Environment variable read at request time. An empty value means the request is sent without an `Authorization` header. A named but unset variable fails with the `API_KEY_MISSING` error code. |
-| `apiKey` | unset | Literal API key value. Prefer `apiKeyEnv`. A literal key belongs only in the git-ignored local file `.local/.structree/config.yaml`, never in a tracked configuration file, and it is never written to the fingerprint, to an error message, or to any file. |
+| `apiKey` | unset | Literal API key value used only as a fallback after an injected key and `apiKeyEnv`. Prefer `apiKeyEnv`. A literal key belongs only in the git-ignored local file `.local/.structree/config.yaml`, never in a tracked configuration file, and it is never written to the fingerprint, to an error message, or to any file. |
 | `batchSize` | `32` | Maximum inputs per HTTP batch, also subject to provider limits. |
 | `timeoutMs` | `30000` | Timeout per request attempt. |
 | `retries` | `3` | Additional transient-error attempts. |

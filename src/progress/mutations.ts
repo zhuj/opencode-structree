@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Schema } from "effect";
+import { CreationNameSchema } from "../creation-name.ts";
 import { FrameworkError } from "../lib/errors.ts";
 import type { ObjectFacade } from "../lib/types.ts";
 import { guardProgressRelations } from "./dependencies.ts";
@@ -14,7 +15,10 @@ export async function planProgress(
 ) {
   signal?.throwIfAborted();
   const now = new Date();
-  const id = `work-${randomUUID()}`;
+  const id =
+    request.name === undefined
+      ? `work-${randomUUID()}`
+      : Schema.decodeUnknownSync(CreationNameSchema)(request.name).toLowerCase();
   const object: WorkItem = {
     id,
     name: id,
@@ -77,7 +81,7 @@ export async function updateProgress(
       "VALIDATION_ERROR",
       "Cannot update a work item whose source identity is unverified.",
     );
-  if (stored.checksum !== request.expectedChecksum)
+  if (facade.config?.writes?.checksumGuard === true && stored.checksum !== request.expectedChecksum)
     throw new FrameworkError("CHECKSUM_CONFLICT", "The source revision has changed.");
   const revisionRequested =
     request.title !== undefined ||

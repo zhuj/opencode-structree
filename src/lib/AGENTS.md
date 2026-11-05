@@ -30,6 +30,13 @@ processing, and MCP infrastructure. It is not the Structree domain layer.
 - Public library and dependency-free model entry points expose only reusable
   contracts. Export application schemas/types from application entry points,
   not from `/lib` or the generic `/model` bundle.
+
+Note: the `LOCAL_STATE_RELATIVE_DIRECTORY` constant in `config.ts`
+(`.local/.structree`) is the single sanctioned exception to the rule above.
+It names the framework's default local-state layout, not application domain
+knowledge: applications override it through configuration (`root`,
+`sqlite.path`, and the local YAML override). No further application
+knowledge, schemas, or policies may be embedded on this basis.
 - Keep the general-purpose `metadata` map opaque. Do not reserve keys or infer
   structured object fields from its contents. Generic file-binding projection
   reads an explicitly authored top-level field, not legacy metadata values.

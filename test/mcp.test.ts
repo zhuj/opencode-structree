@@ -39,7 +39,11 @@ const projectJson = () => ({
 
 class MemoryFacade implements ObjectFacade {
   readonly definitions = coreDefinitions;
-  config?: Pick<FrameworkConfig, "mcp"> & Partial<Pick<FrameworkConfig, "search">>;
+  config: Pick<FrameworkConfig, "mcp"> & Partial<Pick<FrameworkConfig, "search" | "writes">> = {
+    mcp: defineConfig().mcp,
+    writes: { checksumGuard: false },
+    search: defineConfig().search,
+  };
   readonly objects = new Map<string, StoredObject>();
   readonly registry = createCoreRegistry();
   lastSignal: AbortSignal | undefined;
@@ -92,7 +96,7 @@ class MemoryFacade implements ObjectFacade {
     signal?: AbortSignal,
   ): Promise<StoredObject> {
     const old = await this.get(type, id, signal);
-    if (old.checksum !== expectedChecksum)
+    if (this.config.writes?.checksumGuard === true && old.checksum !== expectedChecksum)
       throw new FrameworkError("CHECKSUM_CONFLICT", "The file has changed.");
     const object = this.registry.decode(type, value);
     const stored = { ...old, object, body, checksum: `revision-${++this.revision}` };
@@ -107,7 +111,7 @@ class MemoryFacade implements ObjectFacade {
     signal?: AbortSignal,
   ): Promise<{ type: string; id: string; deleted: true }> {
     const old = await this.get(type, id, signal);
-    if (old.checksum !== expectedChecksum)
+    if (this.config.writes?.checksumGuard === true && old.checksum !== expectedChecksum)
       throw new FrameworkError("CHECKSUM_CONFLICT", "The file has changed.");
     this.objects.delete(objectKey(type, id));
     return { type, id, deleted: true };
@@ -655,7 +659,9 @@ describe("official MCP adapter", () => {
   });
 
   test("round-trips CRUD through real protocol serialization with Date conversion and revision errors", async () => {
-    await connected(async (client, facade) => {
+    const facade = new MemoryFacade();
+    facade.config = { ...facade.config, writes: { checksumGuard: true } };
+    await connected(async (client) => {
       await client.listTools();
       const created = await client.callTool({
         name: "project_create",
@@ -702,7 +708,7 @@ describe("official MCP adapter", () => {
       const missing = await client.callTool({ name: "project_get", arguments: { id: "p-1" } });
       expect(missing.isError).toBe(true);
       expect(missing.structuredContent).toHaveProperty("error.code", "NOT_FOUND");
-    });
+    }, facade);
   });
 
   test("rejects omitted nullable fields, malformed dates, extras, and null optional wrapper keys before mutations", async () => {
@@ -806,7 +812,9 @@ describe("official MCP adapter", () => {
   });
 
   test("rejects conflicting repairs, unsupported field guesses, and invalid checksum types without mutation", async () => {
-    await connected(async (client, facade) => {
+    const facade = new MemoryFacade();
+    facade.config = { ...facade.config, writes: { checksumGuard: true } };
+    await connected(async (client) => {
       for (const args of [
         { object: { ...projectJson(), ID: "another-project" } },
         { object: { ...projectJson(), part_of: "another-parent" } },
@@ -861,7 +869,7 @@ describe("official MCP adapter", () => {
       });
       expect(deleted.isError).not.toBe(true);
       expect(facade.objects.size).toBe(0);
-    });
+    }, facade);
   });
 
   test("keeps output validation strict when arguments were repaired", async () => {

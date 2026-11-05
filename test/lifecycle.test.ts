@@ -53,6 +53,7 @@ async function fixture(
     waitForStartup?: boolean;
     onError?: (error: FrameworkError) => void;
     watch?: boolean;
+    checksumGuard?: boolean;
   } = {},
 ) {
   const directory =
@@ -67,6 +68,9 @@ async function fixture(
       sqlite: { path: "cache/index.sqlite" },
       embeddings: { provider: "disabled" },
       chunking: { size: 2000 },
+      ...(options.checksumGuard === undefined
+        ? {}
+        : { writes: { checksumGuard: options.checksumGuard } }),
       sync: {
         watch: options.watch ?? false,
         debounceMs: 60_000,
@@ -274,9 +278,9 @@ describe("independent instances and lifecycle", () => {
   });
 
   test("independent framework instances cannot both update the same source revision", async () => {
-    const first = await fixture();
+    const first = await fixture({ checksumGuard: true });
     const created = await first.framework.create("project", project("shared"), "Initial");
-    const second = await fixture({ directory: first.directory });
+    const second = await fixture({ directory: first.directory, checksumGuard: true });
     const results = await Promise.allSettled([
       first.framework.update(
         "project",

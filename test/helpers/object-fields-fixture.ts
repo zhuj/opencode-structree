@@ -82,6 +82,7 @@ export async function withObjectFieldsClient(
   run: (fixture: ObjectFieldsFixture) => Promise<void>,
   definitions?: readonly ObjectDefinition[],
   serverFactory: (facade: ObjectFramework) => McpServer = createMcpServer,
+  options: { readonly checksumGuard?: boolean } = {},
 ): Promise<void> {
   const directory = await mkdtemp(path.join(tmpdir(), "structree-object-fields-"));
   const framework = await createFramework({
@@ -91,6 +92,9 @@ export async function withObjectFieldsClient(
       root: "objects",
       embeddings: { provider: "disabled" },
       sync: { watch: false, rescanIntervalMs: 0 },
+      ...(options.checksumGuard === undefined
+        ? {}
+        : { writes: { checksumGuard: options.checksumGuard } }),
     },
   });
   const handler = createMcpHandler(() => serverFactory(framework));

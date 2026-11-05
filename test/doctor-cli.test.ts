@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildDoctorCliProbes } from "../src/doctor-cli.ts";
 import { doctorExitCode, runDoctorReport } from "../src/lib/doctor/index.ts";
+import { withChildTimeout } from "./helpers/timing.ts";
 
 const roots: string[] = [];
 async function root(): Promise<string> {
@@ -38,24 +39,18 @@ async function run(
   const exit = child.exited;
   const stdout = new Response(child.stdout).text();
   const stderr = new Response(child.stderr).text();
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const guard = withChildTimeout(child, timeoutMs, () => {
+    timedOut = true;
+  });
+  // The guard SIGKILLs the child on timeout, which lets the exit/output
+  // promises settle; timedOut is read only after that settlement.
   try {
-    const timeout = new Promise<{ readonly timedOut: true }>((resolve) => {
-      timer = setTimeout(() => {
-        child.kill("SIGKILL");
-        resolve({ timedOut: true });
-      }, timeoutMs);
-    });
-    const outcome = await Promise.race([
-      Promise.all([exit, stdout, stderr]).then(([code, output, errors]) => ({
-        code,
-        stdout: output,
-        stderr: errors,
-        timedOut: false as const,
-      })),
-      timeout,
-    ]);
-    if (!outcome.timedOut) return outcome;
+    await Promise.all([exit, stdout, stderr]);
+    if (!timedOut) {
+      const [code, output, errors] = await Promise.all([exit, stdout, stderr]);
+      return { code, stdout: output, stderr: errors, timedOut: false };
+    }
     const [code, output, errors] = await Promise.all([exit, stdout, stderr]);
     return { code, stdout: output, stderr: errors, timedOut: true };
   } catch (error) {
@@ -63,7 +58,7 @@ async function run(
     await Promise.allSettled([exit, stdout, stderr]);
     throw error;
   } finally {
-    if (timer !== undefined) clearTimeout(timer);
+    guard.clear();
   }
 }
 

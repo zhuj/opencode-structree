@@ -126,7 +126,7 @@ export function registerMemoryTools(
     "memory_set_status",
     {
       description:
-        "Change one complete memory source's lifecycle, requiring matching from status, latest expectedChecksum, caller-owned updatedAt and nonblank reason. Preserves all other fields/body and appends a concise dated lifecycle note. Any explicit lifecycle pair is allowed; does not verify truth, set confidence/retiredAt, accept a decision, change targets or add backlinks. Concurrent changes are refused by normal guarded update. Partial sources are refused, never repaired.",
+        "Change one complete memory source's lifecycle, requiring matching from status, latest expectedChecksum (verified when writes.checksumGuard is enabled), caller-owned updatedAt and nonblank reason. Preserves all other fields/body and appends a concise dated lifecycle note. Any explicit lifecycle pair is allowed; does not verify truth, set confidence/retiredAt, accept a decision, change targets or add backlinks. Concurrent changes are refused by normal guarded update when writes.checksumGuard is enabled. Partial sources are refused, never repaired.",
       inputSchema: input.schema(
         Schema.Struct({
           id: Schema.NonEmptyString,

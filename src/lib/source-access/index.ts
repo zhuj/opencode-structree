@@ -129,7 +129,7 @@ export async function createSourceAccess(options: SourceAccessOptions): Promise<
 
   const access: SourceAccess = {
     definitions,
-    config: { mcp: config.mcp, search: config.search },
+    config: { mcp: config.mcp, writes: config.writes, search: config.search },
     get(type, id, signal) {
       return runSource(async (inner) => {
         registry.get(type);

@@ -36,7 +36,7 @@ export function registerProgressTools(
     "progress_plan",
     {
       description:
-        "Plan resumable work from a title and intended outcome; acceptance, explicit owner and parent/dependencies are optional. Server owns id/name/time and planned status. No mandatory project hierarchy, inferred verification, test execution or durable-memory promotion. Returns a compact objective and checksum.",
+        "Plan resumable work from a title and intended outcome. Prefer an optional descriptive slug name for the stable id and filename; otherwise an id is generated. Acceptance, explicit owner and parent/dependencies are optional. Server owns time and planned status. No mandatory project hierarchy, inferred verification, test execution or durable-memory promotion. Returns a compact objective and checksum.",
       inputSchema: input.schema(ProgressPlanRequestSchema),
       outputSchema: effectMcpSchema(ProgressSummarySchema),
       annotations: { ...readOnly, readOnlyHint: false, idempotentHint: false },
@@ -47,7 +47,7 @@ export function registerProgressTools(
     "progress_update",
     {
       description:
-        "Guard one work item with its latest expectedChecksum. Optional title/outcome/acceptance/body revisions require an explicit checkpoint.note explaining the change. Title does not rename id/name; outcome does not change description. acceptance:[] and body:'' explicitly clear content. Preserve all omitted fields, including verification; no implicit re-verification. Append exactly one bounded checkpoint, never truncate history. Blocked requires blockers and nextAction. Empty blockers/dependencies explicitly clear those fields; parentId:null unparents. Passed verification requires explicit evidence/test result and never establishes acceptance. Known dependency/parent cycles fail; missing/partial references remain unknown. No target updates or test execution. Body is omitted from the compact response; read work_item_get for full content.",
+        "Guard one work item with its latest expectedChecksum when writes.checksumGuard is enabled. Optional title/outcome/acceptance/body revisions require an explicit checkpoint.note explaining the change. Title does not rename id/name; outcome does not change description. acceptance:[] and body:'' explicitly clear content. Preserve all omitted fields, including verification; no implicit re-verification. Append exactly one bounded checkpoint, never truncate history. Blocked requires blockers and nextAction. Empty blockers/dependencies explicitly clear those fields; parentId:null unparents. Passed verification requires explicit evidence/test result and never establishes acceptance. Known dependency/parent cycles fail; missing/partial references remain unknown. No target updates or test execution. Body is omitted from the compact response; read work_item_get for full content.",
       inputSchema: input.schema(ProgressUpdateRequestSchema),
       outputSchema: effectMcpSchema(ProgressSummarySchema),
       annotations: {

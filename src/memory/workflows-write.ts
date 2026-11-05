@@ -33,13 +33,13 @@ export async function rememberMemory(
     )
     .slice(0, 5)
     .map(memoryReference);
-  const { body, ...fields } = input;
+  const { body, name, ...fields } = input;
   const stored = await facade.create(
     "memory",
     {
       ...fields,
-      id: `memory-${randomUUID()}`,
-      name: title,
+      id: name?.toLowerCase() ?? `memory-${randomUUID()}`,
+      name: name?.toLowerCase() ?? title,
       title,
       description: input.description ?? body.trim().replace(/\s+/gu, " ").slice(0, 240),
       category,
@@ -71,7 +71,7 @@ export async function rememberMemory(
     candidates,
     candidateScan: scanned.source,
     reconciliation:
-      "No merge performed. Read candidate sources, then explicitly revise the chosen id using its latest checksum; relation targets and lifecycle remain caller-owned.",
+      "No merge performed. Read candidate sources, then explicitly revise the chosen id using its latest checksum (verified when writes.checksumGuard is enabled); relation targets and lifecycle remain caller-owned.",
   };
 }
 
@@ -91,7 +91,7 @@ export async function reviseMemory(
       "VALIDATION_ERROR",
       "Refusing to revise a source with unverified identity.",
     );
-  if (stored.checksum !== input.expectedChecksum)
+  if (facade.config?.writes?.checksumGuard === true && stored.checksum !== input.expectedChecksum)
     throw new FrameworkError("CHECKSUM_CONFLICT", "The source revision has changed.");
   const { relations, ...changes } = input.changes ?? {};
   return facade.update(

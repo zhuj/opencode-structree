@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { withChildTimeout } from "./helpers/timing.ts";
 
 const roots: string[] = [];
 const project = path.resolve(import.meta.dir, "..");
@@ -31,10 +32,9 @@ async function run(root: string, args: readonly string[], input?: string, entryp
     stdin.end();
   }
   let expired = false;
-  const deadline = setTimeout(() => {
+  const deadline = withChildTimeout(child, 15_000, () => {
     expired = true;
-    child.kill("SIGKILL");
-  }, 15_000);
+  });
   try {
     const [code, stdout, stderr] = await Promise.all([
       child.exited,
@@ -44,7 +44,7 @@ async function run(root: string, args: readonly string[], input?: string, entryp
     if (expired) throw new Error("Repair CLI child exceeded its deadline.");
     return { code, stdout, stderr };
   } finally {
-    clearTimeout(deadline);
+    deadline.clear();
   }
 }
 

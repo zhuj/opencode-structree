@@ -25,7 +25,7 @@ outside the library. See [the library rules](../src/lib/AGENTS.md).
 The generic and application factories deliberately have different defaults.
 `createFramework` from `/lib` requires `definitions` or `registry`. An explicit
 empty array is valid. The root application factory defaults to the twelve
-Structree types plus `memory`. The `ObjectFramework` class belongs to the generic
+Structree types plus `memory` and progress/work items. The `ObjectFramework` class belongs to the generic
 library, so its static `create` also requires explicit registrations.
 
 The SQLite subpath remains separate because its legacy embedding adapter and

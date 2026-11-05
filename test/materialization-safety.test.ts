@@ -115,6 +115,8 @@ test("obsolete outputs are reported and retained without corrupting the last man
     expect(changed.drift.filter((d) => d.status === "obsolete")).toHaveLength(1);
     const obsolete = changed.drift.find((d) => d.status === "obsolete");
     expect(obsolete).toBeDefined();
+    expect(obsolete).toMatchObject({ status: "obsolete" });
+    expect(obsolete?.path).toContain("b");
     if (obsolete) await access(path.join(f.outputDirectory, obsolete.path));
     expect(await readFile(path.join(f.outputDirectory, "manifest.json"), "utf8")).toBe(original);
   } finally {

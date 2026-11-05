@@ -2,11 +2,17 @@
 
 ## Status
 
-Approved design for a new shared tool, `objects_relations`. Not yet implemented.
+Implemented; see ADR-0017 (`docs/decisions/0017-answer-impact-questions-from-the-relation-graph.md`)
+and the current relation query surface. This document is kept as the original
+design record below.
+
+Approved design for a new shared tool, `objects_relations`. Not yet implemented
+at the time of writing.
 
 ## The problem
 
-The server exposes 64 tools: `_create`, `_get`, `_update`, `_delete` and `_list`
+The server exposes 90 tools (historically 64 at the time of the original
+design): `_create`, `_get`, `_update`, `_delete` and `_list`
 per object type, plus `objects_search`, `objects_resync`, `objects_status` and
 `objects_definitions`. Every one of them operates on a single object or on a
 whole type. None of them joins across a relation.

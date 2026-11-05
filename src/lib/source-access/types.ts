@@ -63,6 +63,7 @@ export function snapshotConfig(config: FrameworkConfig): FrameworkConfig {
     sync: Object.freeze({ ...config.sync }),
     search: Object.freeze({ ...config.search }),
     server: Object.freeze({ ...config.server }),
+    writes: Object.freeze({ ...config.writes }),
     mcp: Object.freeze({
       ...config.mcp,
       inputRepair: Object.freeze({ ...config.mcp.inputRepair }),

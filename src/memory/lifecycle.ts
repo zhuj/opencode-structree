@@ -20,7 +20,7 @@ export async function setMemoryStatus(
 ): Promise<StoredObject> {
   signal?.throwIfAborted();
   const stored = completeMemory(await facade.get("memory", request.id, signal));
-  if (stored.checksum !== request.expectedChecksum)
+  if (facade.config?.writes?.checksumGuard === true && stored.checksum !== request.expectedChecksum)
     throw new FrameworkError("CHECKSUM_CONFLICT", "The source revision has changed.");
   if (stored.object.status !== request.from)
     throw new FrameworkError("CONFLICT", "The source lifecycle status does not match from.", {

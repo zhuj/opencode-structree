@@ -18,6 +18,8 @@ test("fields tools advertise the typed wire contract and strict input fields", a
     const get = tools.find((tool) => tool.name === "objects_fields_get");
     const update = tools.find((tool) => tool.name === "objects_fields_update");
     expect(get).toBeDefined();
+    expect(get).toHaveProperty("name", "objects_fields_get");
+    expect(get?.outputSchema).toHaveProperty("properties.checksum.type", "string");
     expect(update).toHaveProperty("inputSchema.required", [
       "type",
       "id",
@@ -167,55 +169,65 @@ test("decision replacement and binding clearing retain omitted evidence", async 
 });
 
 test("stale fields updates leave source bytes unchanged", async () => {
-  await withObjectFieldsClient(async ({ framework, client, directory }) => {
-    const stored = await framework.create("adr", fieldsObject());
-    const filename = path.join(directory, "objects", stored.path);
-    const raw = await readFile(filename, "utf8");
-    const result = await client.callTool({
-      name: "objects_fields_update",
-      arguments: {
-        type: "adr",
-        id: stored.object.id,
-        expectedChecksum: "stale",
-        updatedAt: timestamp,
-        decision,
-      },
-    });
-    expect(result.structuredContent).toHaveProperty("error.code", "CHECKSUM_CONFLICT");
-    expect(await readFile(filename, "utf8")).toBe(raw);
-  });
+  await withObjectFieldsClient(
+    async ({ framework, client, directory }) => {
+      const stored = await framework.create("adr", fieldsObject());
+      const filename = path.join(directory, "objects", stored.path);
+      const raw = await readFile(filename, "utf8");
+      const result = await client.callTool({
+        name: "objects_fields_update",
+        arguments: {
+          type: "adr",
+          id: stored.object.id,
+          expectedChecksum: "stale",
+          updatedAt: timestamp,
+          decision,
+        },
+      });
+      expect(result.structuredContent).toHaveProperty("error.code", "CHECKSUM_CONFLICT");
+      expect(await readFile(filename, "utf8")).toBe(raw);
+    },
+    undefined,
+    undefined,
+    { checksumGuard: true },
+  );
 });
 
 test("competing revisions between fields read and guarded write are not overwritten", async () => {
-  await withObjectFieldsClient(async ({ framework, client }) => {
-    const stored = await framework.create("adr", fieldsObject(), "Old body");
-    const update = framework.update.bind(framework);
-    framework.update = async (...args: Parameters<typeof framework.update>) => {
-      await update(
-        "adr",
-        stored.object.id,
-        { ...stored.object, title: "Concurrent revision" },
-        "Latest body",
-        stored.checksum,
-      );
-      return update(...args);
-    };
-    const result = await client.callTool({
-      name: "objects_fields_update",
-      arguments: {
-        type: "adr",
-        id: stored.object.id,
-        expectedChecksum: stored.checksum,
-        updatedAt: timestamp,
-        reviews: [],
-      },
-    });
-    expect(result.structuredContent).toHaveProperty("error.code", "CHECKSUM_CONFLICT");
-    const current = await framework.get("adr", stored.object.id);
-    expect(current.body).toBe("Latest body");
-    expect(current.object.title).toBe("Concurrent revision");
-    expect(Object.hasOwn(current.object, "reviews")).toBe(false);
-  });
+  await withObjectFieldsClient(
+    async ({ framework, client }) => {
+      const stored = await framework.create("adr", fieldsObject(), "Old body");
+      const update = framework.update.bind(framework);
+      framework.update = async (...args: Parameters<typeof framework.update>) => {
+        await update(
+          "adr",
+          stored.object.id,
+          { ...stored.object, title: "Concurrent revision" },
+          "Latest body",
+          stored.checksum,
+        );
+        return update(...args);
+      };
+      const result = await client.callTool({
+        name: "objects_fields_update",
+        arguments: {
+          type: "adr",
+          id: stored.object.id,
+          expectedChecksum: stored.checksum,
+          updatedAt: timestamp,
+          reviews: [],
+        },
+      });
+      expect(result.structuredContent).toHaveProperty("error.code", "CHECKSUM_CONFLICT");
+      const current = await framework.get("adr", stored.object.id);
+      expect(current.body).toBe("Latest body");
+      expect(current.object.title).toBe("Concurrent revision");
+      expect(Object.hasOwn(current.object, "reviews")).toBe(false);
+    },
+    undefined,
+    undefined,
+    { checksumGuard: true },
+  );
 });
 
 test("non-ADR fields read does not expose an opaque metadata decision", async () => {

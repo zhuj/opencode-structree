@@ -1,5 +1,9 @@
 import type { Schema } from "effect";
+import type { RelationKind } from "./model/index.ts";
 import type { DocumentIssue, JsonRecord } from "./vault/read-data.ts";
+
+export type { RelationKind } from "./model/index.ts";
+export { RELATION_KIND_ORDER } from "./model/index.ts";
 
 /** The largest number of objects one list call may return. */
 export const LIST_LIMIT_MAX = 1000;
@@ -22,12 +26,6 @@ export interface BaseObject {
   // biome-ignore lint/suspicious/noExplicitAny: The supplied domain contract intentionally permits arbitrary metadata; persistence validates JSON compatibility separately.
   readonly metadata: Readonly<Record<string, any>>;
 }
-
-/**
- * The relation kinds. The kind decides how a change propagates along a relation, which is
- * what separates a dependency that breaks from a justification that goes stale.
- */
-export type RelationKind = "depends" | "uses" | "justifies" | "contains" | "owns" | "relates";
 
 export interface RelationDescriptor {
   /** The path inside the object's `relations` struct, for example "commitsTo" or "commitment.scenarios". */
@@ -189,6 +187,8 @@ export interface FrameworkConfig {
     readonly debounceMs: number;
     readonly rescanIntervalMs: number;
     readonly maxFileBytes: number;
+    /** Total decoded characters (UTF-16 code units) a single walk() may collect before marking the scan incomplete. */
+    readonly maxScanTotalCharacters: number;
     readonly concurrency: number;
     readonly lockTimeoutMs: number;
   };
@@ -202,6 +202,7 @@ export interface FrameworkConfig {
     readonly maxMatchCharacters: number;
   };
   readonly server: { readonly name: string; readonly version: string };
+  readonly writes: { readonly checksumGuard: boolean };
   readonly mcp: McpConfig;
 }
 
@@ -414,7 +415,9 @@ export type ObjectListResult = ObjectListComplete | ObjectListIncomplete;
 export interface ObjectFacade {
   readonly definitions: readonly ObjectDefinition[];
   // The search bounds are advertised to clients, so a facade that knows them must expose them.
-  readonly config?: Pick<FrameworkConfig, "mcp"> & Partial<Pick<FrameworkConfig, "search">>;
+  // It also carries writes.checksumGuard for workflow pre-checks.
+  readonly config?: Pick<FrameworkConfig, "mcp"> &
+    Partial<Pick<FrameworkConfig, "search" | "writes">>;
   create(type: string, object: unknown, body?: string, signal?: AbortSignal): Promise<StoredObject>;
   get(type: string, id: string, signal?: AbortSignal): Promise<ReadObject>;
   update(

@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { CreationNameSchema } from "../creation-name.ts";
 import {
   MemoryBaseSchema,
   MemoryCategorySchema,
@@ -34,6 +35,7 @@ const editable = {
 };
 export const RememberMemorySchema = Schema.Struct({
   ...editable,
+  name: Schema.optionalKey(CreationNameSchema),
   title: meaningfulText,
   body: meaningfulText,
   relations: Schema.optionalKey(MemoryRelationsSchema),

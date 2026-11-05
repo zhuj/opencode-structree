@@ -39,9 +39,12 @@ describe("materialization gate", () => {
       expect(result.stderr).toBe("");
       const summary = JSON.parse(result.stdout);
       expect(summary).toMatchObject({ valid: true, partial: 0, check: { clean: false } });
-      const drift: readonly { readonly status: string }[] = summary.check.drift;
+      const drift: readonly { readonly status: string; readonly path?: string }[] =
+        summary.check.drift;
       expect(drift.length).toBeGreaterThan(0);
-      expect(drift.some((entry) => entry.status === "missing")).toBe(true);
+      const missing = drift.find((entry) => entry.status === "missing");
+      expect(missing).toBeDefined();
+      expect(missing?.status).toBe("missing");
       expect(await readdir(f.root)).toEqual(before);
     } finally {
       await f.close();

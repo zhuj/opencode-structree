@@ -12,77 +12,82 @@ import { sessionContext } from "../src/session-context.ts";
 import { withObjectFieldsClient } from "./helpers/object-fields-fixture.ts";
 
 test("session context resumes paused work and recalls only explicitly activated knowledge", async () => {
-  await withObjectFieldsClient(async ({ client, framework }) => {
-    const planned = await client.callTool({
-      name: "progress_plan",
-      arguments: {
-        title: "Session handoff",
-        outcome: "Resume a paused deliverable without assuming tests ran",
-        acceptance: ["Checkpoint history survives handoff"],
-      },
-    });
-    expect(planned.isError).not.toBe(true);
-    const initial = Schema.decodeUnknownSync(ProgressSummarySchema)(planned.structuredContent);
-    const changed = await client.callTool({
-      name: "progress_update",
-      arguments: {
-        id: initial.id,
-        expectedChecksum: initial.checksum,
-        status: "paused",
-        checkpoint: { note: "Implementation checkpoint; verification not run" },
-        nextAction: "Run focused verification when resumed",
-      },
-    });
-    expect(changed.isError).not.toBe(true);
-    const paused = Schema.decodeUnknownSync(ProgressSummarySchema)(changed.structuredContent);
-    const active = await rememberMemory(framework, {
-      title: "Resumable guidance",
-      body: "Resumable work requires an explicit next action.",
-    });
-    await reviseMemory(framework, {
-      id: active.stored.object.id,
-      expectedChecksum: active.stored.checksum,
-      changes: { status: "active" },
-    });
-    const draft = await rememberMemory(framework, {
-      title: "Resumable draft",
-      body: "Resumable speculation must remain draft.",
-    });
-    const result = await client.callTool({
-      name: "session_context",
-      arguments: { id: initial.id, query: "resumable" },
-    });
-    expect(result.isError).not.toBe(true);
-    expect(result.structuredContent).toMatchObject({
-      work: {
-        id: initial.id,
-        status: "paused",
-        checksum: paused.checksum,
-        outcome: initial.outcome,
-        acceptance: initial.acceptance,
-        checkpointCount: 1,
-        verification: { state: "pending" },
-        nextAction: "Run focused verification when resumed",
-      },
-      knowledgeRequested: true,
-      knowledgeStatus: "recalled",
-      knowledge: { memories: [{ id: active.stored.object.id, status: "active" }] },
-    });
-    expect((await framework.get("memory", draft.stored.object.id)).object).toHaveProperty(
-      "status",
-      "draft",
-    );
-    const stale = await client.callTool({
-      name: "progress_update",
-      arguments: {
-        id: initial.id,
-        expectedChecksum: initial.checksum,
-        status: "active",
-      },
-    });
-    expect(stale.structuredContent).toHaveProperty("error.code", "CHECKSUM_CONFLICT");
-    expect((await framework.get("work_item", initial.id)).checksum).toBe(paused.checksum);
-  });
+  await withObjectFieldsClient(
+    async ({ client, framework }) => {
+      const planned = await client.callTool({
+        name: "progress_plan",
+        arguments: {
+          title: "Session handoff",
+          outcome: "Resume a paused deliverable without assuming tests ran",
+          acceptance: ["Checkpoint history survives handoff"],
+        },
+      });
+      expect(planned.isError).not.toBe(true);
+      const initial = Schema.decodeUnknownSync(ProgressSummarySchema)(planned.structuredContent);
+      const changed = await client.callTool({
+        name: "progress_update",
+        arguments: {
+          id: initial.id,
+          expectedChecksum: initial.checksum,
+          status: "paused",
+          checkpoint: { note: "Implementation checkpoint; verification not run" },
+          nextAction: "Run focused verification when resumed",
+        },
+      });
+      expect(changed.isError).not.toBe(true);
+      const paused = Schema.decodeUnknownSync(ProgressSummarySchema)(changed.structuredContent);
+      const active = await rememberMemory(framework, {
+        title: "Resumable guidance",
+        body: "Resumable work requires an explicit next action.",
+      });
+      await reviseMemory(framework, {
+        id: active.stored.object.id,
+        expectedChecksum: active.stored.checksum,
+        changes: { status: "active" },
+      });
+      const draft = await rememberMemory(framework, {
+        title: "Resumable draft",
+        body: "Resumable speculation must remain draft.",
+      });
+      const result = await client.callTool({
+        name: "session_context",
+        arguments: { id: initial.id, query: "resumable" },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        work: {
+          id: initial.id,
+          status: "paused",
+          checksum: paused.checksum,
+          outcome: initial.outcome,
+          acceptance: initial.acceptance,
+          checkpointCount: 1,
+          verification: { state: "pending" },
+          nextAction: "Run focused verification when resumed",
+        },
+        knowledgeRequested: true,
+        knowledgeStatus: "recalled",
+        knowledge: { memories: [{ id: active.stored.object.id, status: "active" }] },
+      });
+      expect((await framework.get("memory", draft.stored.object.id)).object).toHaveProperty(
+        "status",
+        "draft",
+      );
+      const stale = await client.callTool({
+        name: "progress_update",
+        arguments: {
+          id: initial.id,
+          expectedChecksum: initial.checksum,
+          status: "active",
+        },
+      });
+      expect(stale.structuredContent).toHaveProperty("error.code", "CHECKSUM_CONFLICT");
+      expect((await framework.get("work_item", initial.id)).checksum).toBe(paused.checksum);
+    },
+    undefined,
+    undefined,
+    { checksumGuard: true },
+  );
 });
 
 test("omitted knowledge query does not scan memories or imply their absence", async () => {

@@ -199,7 +199,9 @@ test("later checkpoints preserve explicitly passed verification at its recorded 
       expectedChecksum: planned.checksum,
       verification: { state: "passed", testResult: "Focused tests passed before further work" },
     });
-    expect(verified.verification.recordedAt).toBeDefined();
+    expect(verified.verification.recordedAt).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/,
+    );
     const later = await updateProgress(framework, {
       id: planned.id,
       expectedChecksum: verified.checksum,

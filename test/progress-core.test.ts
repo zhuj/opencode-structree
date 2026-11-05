@@ -15,7 +15,8 @@ test("plan, checkpoint and resume preserve the objective and disclose unverified
     });
     expect(planned.status).toBe("planned");
     expect(planned.verification.state).toBe("pending");
-    expect(planned.id).toBeTruthy();
+    expect(planned.id).toMatch(/^work-[0-9a-f-]{36}$/);
+    expect(planned.id).toMatch(/^[a-z0-9][a-z0-9-]*$/);
     const updated = await updateProgress(framework, {
       id: planned.id,
       expectedChecksum: planned.checksum,
@@ -52,45 +53,62 @@ test("plan, checkpoint and resume preserve the objective and disclose unverified
   }, progressDefinitions);
 });
 
-test("updates refuse stale writes and require actionable blocks while pause stays resumable", async () => {
+test("direct planning rejects a name that is not a portable slug", async () => {
   await withObjectFieldsClient(async ({ framework }) => {
-    const planned = await planProgress(framework, { title: "A", outcome: "Deliver A" });
     await expect(
-      updateProgress(framework, {
+      planProgress(framework, {
+        name: "two words",
+        title: "Task",
+        outcome: "Done",
+      }),
+    ).rejects.toThrow();
+  }, progressDefinitions);
+});
+
+test("updates refuse stale writes and require actionable blocks while pause stays resumable", async () => {
+  await withObjectFieldsClient(
+    async ({ framework }) => {
+      const planned = await planProgress(framework, { title: "A", outcome: "Deliver A" });
+      await expect(
+        updateProgress(framework, {
+          id: planned.id,
+          expectedChecksum: planned.checksum,
+          status: "blocked",
+        }),
+      ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+      const blocked = await updateProgress(framework, {
         id: planned.id,
         expectedChecksum: planned.checksum,
         status: "blocked",
-      }),
-    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
-    const blocked = await updateProgress(framework, {
-      id: planned.id,
-      expectedChecksum: planned.checksum,
-      status: "blocked",
-      blockers: ["Need owner decision"],
-      nextAction: "Ask owner",
-      checkpoint: { note: "Waiting" },
-    });
-    await expect(
-      updateProgress(framework, {
+        blockers: ["Need owner decision"],
+        nextAction: "Ask owner",
+        checkpoint: { note: "Waiting" },
+      });
+      await expect(
+        updateProgress(framework, {
+          id: planned.id,
+          expectedChecksum: planned.checksum,
+          blockers: [],
+          status: "active",
+        }),
+      ).rejects.toMatchObject({ code: "CHECKSUM_CONFLICT" });
+      const paused = await updateProgress(framework, {
         id: planned.id,
-        expectedChecksum: planned.checksum,
-        blockers: [],
-        status: "active",
-      }),
-    ).rejects.toMatchObject({ code: "CHECKSUM_CONFLICT" });
-    const paused = await updateProgress(framework, {
-      id: planned.id,
-      expectedChecksum: blocked.checksum,
-      status: "paused",
-    });
-    expect(paused.blockers).toEqual(["Need owner decision"]);
-    expect(paused.nextAction).toBe("Ask owner");
-    const resumed = await resumeProgress(framework, { id: planned.id });
-    expect(resumed.status).toBe("paused");
-    expect(resumed.checksum).toBe(paused.checksum);
-    expect(resumed.checkpointCount).toBe(2);
-    expect(resumed.recentCheckpoints[0]?.note).toBe("Waiting");
-  }, progressDefinitions);
+        expectedChecksum: blocked.checksum,
+        status: "paused",
+      });
+      expect(paused.blockers).toEqual(["Need owner decision"]);
+      expect(paused.nextAction).toBe("Ask owner");
+      const resumed = await resumeProgress(framework, { id: planned.id });
+      expect(resumed.status).toBe("paused");
+      expect(resumed.checksum).toBe(paused.checksum);
+      expect(resumed.checkpointCount).toBe(2);
+      expect(resumed.recentCheckpoints[0]?.note).toBe("Waiting");
+    },
+    progressDefinitions,
+    undefined,
+    { checksumGuard: true },
+  );
 });
 
 test("dependency readiness is source-backed and cycles never mutate the source", async () => {
@@ -173,5 +191,23 @@ test("partial sources are diagnostics with source-based pagination and reads do 
     ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
     expect(await readFile(filename, "utf8")).toBe(raw);
     expect((await resumeProgress(framework, { id: second.id })).checksum).toBe(second.checksum);
+  }, progressDefinitions);
+});
+
+test("default configuration accepts a stale expectedChecksum on progress_update", async () => {
+  await withObjectFieldsClient(async ({ framework }) => {
+    const planned = await planProgress(framework, {
+      title: "Stale checksum default-off",
+      outcome: "Checksum is only verified when writes.checksumGuard is enabled",
+    });
+    expect(framework.config?.writes?.checksumGuard).not.toBe(true);
+    const updated = await updateProgress(framework, {
+      id: planned.id,
+      expectedChecksum: "stale-checksum-that-does-not-match",
+      status: "active",
+      checkpoint: { note: "Default-off regression: stale checksum accepted" },
+    });
+    expect(updated.status).toBe("active");
+    expect(updated.checkpointCount).toBe(1);
   }, progressDefinitions);
 });

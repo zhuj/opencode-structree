@@ -94,6 +94,8 @@ describe("doctor inventory pagination revision", () => {
       const report = inventoryReport(result);
 
       expect(firstPageRevision).toBeDefined();
+      expect(typeof firstPageRevision).toBe("string");
+      expect(firstPageRevision?.length).toBeGreaterThan(0);
       expect(result.context?.entries).toBe(104);
       expect(result.coverage).toBe("limited");
       expect(result.findings?.some((finding) => finding.code === "INVENTORY_LIST_PARTIAL")).toBe(

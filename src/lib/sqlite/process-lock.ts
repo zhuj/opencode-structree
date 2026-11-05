@@ -12,6 +12,40 @@ export interface SqliteProcessLockOptions {
   readonly retryIntervalMs?: number;
 }
 
+function attachRollbackError(error: unknown, rollbackError: unknown): void {
+  // Both failures are worth knowing about, but the primary error is the contract.
+  // Attach the rollback failure as a non-enumerable `rollbackError` so the
+  // primary error's identity/type (and `isBusy`) are preserved. When the primary
+  // has no `cause` yet, chain the rollback failure as a non-enumerable `cause`
+  // so it matches constructor-set causes. Attachment is best-effort: any
+  // failure (e.g. a frozen error object) is swallowed so the primary error
+  // always propagates unchanged.
+  if (error === null || (typeof error !== "object" && typeof error !== "function")) return;
+  const target = error as { rollbackError?: unknown; cause?: unknown };
+  try {
+    try {
+      Object.defineProperty(target, "rollbackError", {
+        value: rollbackError,
+        writable: true,
+        configurable: true,
+        enumerable: false,
+      });
+    } catch {
+      target.rollbackError = rollbackError;
+    }
+    if (target.cause === undefined) {
+      Object.defineProperty(target, "cause", {
+        value: rollbackError,
+        writable: true,
+        configurable: true,
+        enumerable: false,
+      });
+    }
+  } catch {
+    // Best-effort: the primary error propagates regardless.
+  }
+}
+
 function isBusy(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
   return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED";
@@ -155,6 +189,15 @@ export class SqliteProcessLock {
     }
   }
 
+  /**
+   * Run work inside an immediate transaction.
+   *
+   * On failure the transaction is rolled back. If that ROLLBACK fails, one
+   * further best-effort ROLLBACK is attempted: the first failure can be
+   * transient (e.g. busy) while the transaction is still open, and a retry
+   * after an automatic rollback fails harmlessly. The retry is swallowed and
+   * never replaces the primary error.
+   */
   private async execute<A>(work: () => A | Promise<A>, signal?: AbortSignal): Promise<A> {
     const database = this.connection();
     await this.acquire(database, signal);
@@ -166,8 +209,22 @@ export class SqliteProcessLock {
       database.exec("COMMIT;");
       held = false;
       return result;
-    } finally {
-      if (held) database.exec("ROLLBACK;");
+    } catch (error) {
+      if (held) {
+        try {
+          database.exec("ROLLBACK;");
+        } catch (rollbackError) {
+          attachRollbackError(error, rollbackError);
+          // Exactly one best-effort retry so a failed rollback cannot leave
+          // the connection stranded inside the open transaction.
+          try {
+            database.exec("ROLLBACK;");
+          } catch {
+            // The primary error still propagates unchanged.
+          }
+        }
+      }
+      throw error;
     }
   }
 

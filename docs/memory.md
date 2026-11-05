@@ -17,14 +17,20 @@ For ordinary agent use, prefer the [intent workflows](agent-workflows.md):
 leave the full object contract available without requiring it for routine work.
 
 ```json
-{"title":"Scoped cancellation","body":"Cancellation must propagate through source reads. Evidence: test/cancellation.test.ts.","scope":["source reads"]}
+{"name":"scoped-cancellation","title":"Scoped cancellation","body":"Cancellation must propagate through source reads. Evidence: test/cancellation.test.ts.","scope":["source reads"]}
 ```
 
 That is a `memory_remember` request. The service creates bookkeeping and defaults
 to `lessons`, `draft`, and `low` confidence; it does not verify the claim. Retain
 the returned `id` and `checksum`. To revise the body, call `memory_revise` with
-`id`, `expectedChecksum`, and `body`. Optional `changes` replaces only supplied
+`id`, `expectedChecksum`, and `body` (checksum verified only when `writes.checksumGuard` is enabled). Optional `changes` replaces only supplied
 fields; supplied relation arrays replace those arrays, not all relations.
+
+Prefer a descriptive `name` slug: letters and digits separated by single hyphens.
+It becomes the lowercased id and filename, and an existing id is never overwritten.
+Omit it to retain a generated id. The advanced `memory_create` tool instead
+requires a complete object with an explicit `id`; choose a descriptive slug for
+that id (and its `name`) to obtain the same readable filename.
 
 `memory_recall({"query":"cancellation"})` returns compact source-backed matches.
 It defaults to active/nonretired entries, applies filters before limiting output,
@@ -176,10 +182,10 @@ with no entries is not proof of absence. Existing full-text token rules,
 excerpt disclosure, index lag and optional semantic-provider limitations still
 apply. Memory tools do not prepare models or initialize a second cache.
 
-Status changes require the expected current status, latest checksum, target
+Status changes require the expected current status, the latest checksum (verified only when `writes.checksumGuard` is enabled), target
 status, caller timestamp and nonblank reason. The tool preserves unrelated
-fields and appends the lifecycle note to the body. It refuses partial sources,
-status mismatches and stale revisions. It does not verify authority or truth,
+fields and appends the lifecycle note to the body. It refuses partial sources
+and status mismatches; stale revisions are refused only when writes.checksumGuard is enabled. It does not verify authority or truth,
 set confidence, retire the object, update superseded targets or add backlinks.
 
 ## Scope Limits

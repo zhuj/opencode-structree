@@ -15,6 +15,7 @@ test("repaired MCP writes reach Markdown and search while rejected repairs prese
       root: "objects",
       embeddings: { provider: "disabled" },
       sync: { watch: false, rescanIntervalMs: 0 },
+      writes: { checksumGuard: true },
     },
   });
   const handler = createMcpHandler(() => createMcpServer(framework));

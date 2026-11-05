@@ -11,6 +11,7 @@ Plan a small task without constructing an internal object:
 
 ```json
 {
+  "name": "clarify-cancellation",
   "title": "Clarify cancellation behavior",
   "outcome": "Source reads preserve caller cancellation.",
   "acceptance": ["A cancelled request stops before reading subsequent sources."],
@@ -21,6 +22,12 @@ Plan a small task without constructing an internal object:
 Send this to `progress_plan`. Keep its returned `id` and `checksum`. Work begins
 as `planned`; optional `owner`, `parentId`, and `dependencies` express real
 ownership and relationships, not a mandatory hierarchy.
+
+Prefer a descriptive `name` slug: letters and digits separated by single hyphens.
+It becomes the lowercased id and filename; duplicate ids are rejected. If omitted,
+the id is generated. The advanced `work_item_create` tool requires a complete
+object with an explicit `id`; choose a descriptive slug for that id (and its
+`name`) to obtain the same readable filename.
 
 Record a checkpoint with `progress_update`:
 
@@ -36,15 +43,15 @@ Record a checkpoint with `progress_update`:
 ```
 
 The service generates checkpoint timestamps, preserves prior history and omitted body,
-and performs one guarded revision. Omitted fields survive. Explicit empty blocker
+and performs one revision (guarded when `writes.checksumGuard` is enabled). Omitted fields survive. Explicit empty blocker
 or dependency arrays clear those fields; `parentId: null` clears a parent.
-A stale checksum fails rather than discarding someone else's checkpoint.
+When `writes.checksumGuard` is enabled, a stale checksum fails rather than discarding someone else's checkpoint; by default the checksum is not verified.
 
 ### Revise The Plan Or Work Body
 
 `progress_update` also accepts optional `title`, `outcome`, `acceptance` and
 `body`. Supplying any of these requires an explicit `checkpoint.note` explaining
-the revision, even when clearing a list or body. For example:
+the revision (guarded checksum when enabled), even when clearing a list or body. For example:
 
 ```json
 {

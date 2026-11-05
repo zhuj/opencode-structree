@@ -12,6 +12,7 @@ import {
   WatcherClosedError,
   type WatchSource,
 } from "../src/lib/vault/watcher.ts";
+import { eventually, withDeadline } from "./helpers/timing.ts";
 
 const releases: Array<() => void> = [];
 const cleanup: Array<() => Promise<unknown>> = [];
@@ -33,31 +34,6 @@ function deferred<Value>() {
     reject = fail;
   });
   return { promise, resolve, reject };
-}
-
-async function eventually(condition: () => boolean): Promise<void> {
-  const deadline = Date.now() + 3000;
-  while (!condition()) {
-    if (Date.now() >= deadline) throw new Error("Timed out waiting for vault synchronization.");
-    await delay(5);
-  }
-}
-
-async function withDeadline<Value>(promise: Promise<Value>, timeoutMs = 3000): Promise<Value> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timeout = setTimeout(
-          () => reject(new Error("Timed out waiting for lifecycle recovery.")),
-          timeoutMs,
-        );
-      }),
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
 }
 
 function own<Report>(lifecycle: WatchLifecycle<Report>): WatchLifecycle<Report> {

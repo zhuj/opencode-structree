@@ -27,6 +27,8 @@ const defaultReadBuffer: ReadBufferOperation = (handle, buffer, offset, length, 
 
 export interface ConfinedFilesystemOptions {
   readonly maxFileBytes?: number;
+  /** Total decoded characters (UTF-16 code units) a single walk() may collect before producing an incomplete scan. */
+  readonly maxScanTotalCharacters?: number;
   readonly confinement?: "auto" | "descriptor" | "portable";
   readonly readOnly?: boolean;
   readonly createRoot?: boolean;
@@ -62,6 +64,7 @@ export type BasenameRenameResult = "renamed" | "equivalent";
 
 export class ConfinedFilesystem {
   readonly maxFileBytes: number;
+  readonly maxScanTotalCharacters: number;
   private directoryRoot: ConfinedDirectory | undefined;
   private initialization: Promise<void> | undefined;
   private stopping = false;
@@ -83,6 +86,7 @@ export class ConfinedFilesystem {
       throw new FrameworkError("PATH", "Vault root must be a nonempty filesystem path.");
     assertUtf8Text(configuredRoot);
     this.maxFileBytes = options.maxFileBytes ?? 5_000_000;
+    this.maxScanTotalCharacters = options.maxScanTotalCharacters ?? 268_435_456;
     this.requestedConfinement = options.confinement ?? "auto";
     this.readOnly = options.readOnly ?? false;
     this.createRoot = !this.readOnly && (options.createRoot ?? true);
@@ -94,6 +98,11 @@ export class ConfinedFilesystem {
     this.readBuffer = options.readBuffer ?? defaultReadBuffer;
     if (!Number.isSafeInteger(this.maxFileBytes) || this.maxFileBytes < 1)
       throw new FrameworkError("CONFIG", "Vault maxFileBytes must be a positive safe integer.");
+    if (!Number.isSafeInteger(this.maxScanTotalCharacters) || this.maxScanTotalCharacters < 1)
+      throw new FrameworkError(
+        "CONFIG",
+        "Vault maxScanTotalCharacters must be a positive safe integer.",
+      );
   }
 
   get root(): string {
@@ -520,6 +529,8 @@ export class ConfinedFilesystem {
     const issues: VaultIssue[] = [];
     let complete = true;
     let scanned = 0;
+    let totalBytes = 0;
+    let budgetExceeded = false;
     const issue = (candidate: string, error: unknown, code = "READ") => {
       issues.push({
         path: candidate,
@@ -528,6 +539,7 @@ export class ConfinedFilesystem {
       });
     };
     const walk = async (directory: ConfinedDirectory, prefix: string): Promise<void> => {
+      if (budgetExceeded) return;
       signal?.throwIfAborted();
       let entries: Dirent[];
       try {
@@ -539,6 +551,7 @@ export class ConfinedFilesystem {
       }
       entries.sort((left, right) => left.name.localeCompare(right.name));
       for (const entry of entries) {
+        if (budgetExceeded) return;
         signal?.throwIfAborted();
         if (entry.name.startsWith(".")) continue;
         const candidate = prefix ? `${prefix}/${entry.name}` : entry.name;
@@ -566,9 +579,28 @@ export class ConfinedFilesystem {
           scanned++;
           try {
             const { bytes } = await this.readFrom(directory, entry.name, candidate, signal);
+            const raw = this.decode(bytes, candidate);
+            // Bound decoded string length: stop before exceeding the budget, keep
+            // everything collected so far. The budget is tracked in decoded UTF-16
+            // code units of the collected strings (raw.length), which is what
+            // bounds the in-memory array; UTF-8 byte counts can differ for
+            // multibyte text.
+            const rawBytes = raw.length;
+            if (totalBytes + rawBytes > this.maxScanTotalCharacters) {
+              budgetExceeded = true;
+              complete = false;
+              issues.push({
+                path: candidate,
+                code: "SCAN_BUDGET",
+                message:
+                  "Vault scan budget exceeded: scan stopped before collecting this file to bound total memory.",
+              });
+              return;
+            }
+            totalBytes += rawBytes;
             files.push({
               path: candidate,
-              raw: this.decode(bytes, candidate),
+              raw,
               checksum: checksum(bytes),
             });
           } catch (error) {

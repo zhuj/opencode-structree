@@ -156,4 +156,14 @@ describe("source-only search", () => {
     const tooMany = Array.from({ length: 129 }, (_, index) => `term${index}`).join(" ");
     await expect(access.search({ query: tooMany })).rejects.toMatchObject({ code: "INTERNAL" });
   });
+
+  test("aborts mid-scoring when the signal is cancelled", async () => {
+    const { access, root } = await fixture();
+    for (let index = 0; index < 200; index++)
+      await writeProject(root, `doc${index}`, "abort evidence");
+    const controller = new AbortController();
+    const search = access.search({ query: "abort evidence" }, controller.signal);
+    controller.abort();
+    await expect(search).rejects.toMatchObject({ name: "AbortError" });
+  });
 });

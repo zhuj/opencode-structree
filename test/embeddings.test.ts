@@ -250,6 +250,8 @@ describe("OpenAI-compatible HTTP provider with mocked transport", () => {
 describe("OpenAI-compatible credential resolution", () => {
   test("a literal API key is sent as the bearer token and stays out of the fingerprint", async () => {
     const literal = "sk-literal-secret-value";
+    const previous = process.env.OBJECT_MCP_TEST_KEY;
+    delete process.env.OBJECT_MCP_TEST_KEY;
     const authorizations: Array<string | null> = [];
     const provider = new OpenAIEmbeddingProvider(
       { ...openaiConfig, apiKey: literal },
@@ -269,6 +271,55 @@ describe("OpenAI-compatible credential resolution", () => {
       await withoutKey.close();
     } finally {
       await provider.close();
+      if (previous === undefined) delete process.env.OBJECT_MCP_TEST_KEY;
+      else process.env.OBJECT_MCP_TEST_KEY = previous;
+    }
+  });
+
+  test("an injected key wins over the environment variable and the literal fallback", async () => {
+    const previous = process.env.OBJECT_MCP_TEST_KEY;
+    process.env.OBJECT_MCP_TEST_KEY = "environment-key";
+    const authorizations: Array<string | null> = [];
+    const provider = new OpenAIEmbeddingProvider(
+      { ...openaiConfig, apiKey: "sk-literal-fallback" },
+      {
+        fetch: async (_url, init) => {
+          authorizations.push(new Headers(init?.headers).get("authorization"));
+          return Response.json({ data: [{ index: 0, embedding: [1, 0] }] });
+        },
+        apiKey: () => "injected-key",
+      },
+    );
+    try {
+      await provider.embed(["input"], "query");
+      expect(authorizations).toEqual(["Bearer injected-key"]);
+    } finally {
+      await provider.close();
+      if (previous === undefined) delete process.env.OBJECT_MCP_TEST_KEY;
+      else process.env.OBJECT_MCP_TEST_KEY = previous;
+    }
+  });
+
+  test("the environment variable wins over the literal fallback", async () => {
+    const previous = process.env.OBJECT_MCP_TEST_KEY;
+    process.env.OBJECT_MCP_TEST_KEY = "environment-key";
+    const authorizations: Array<string | null> = [];
+    const provider = new OpenAIEmbeddingProvider(
+      { ...openaiConfig, apiKey: "sk-literal-fallback" },
+      {
+        fetch: async (_url, init) => {
+          authorizations.push(new Headers(init?.headers).get("authorization"));
+          return Response.json({ data: [{ index: 0, embedding: [1, 0] }] });
+        },
+      },
+    );
+    try {
+      await provider.embed(["input"], "query");
+      expect(authorizations).toEqual(["Bearer environment-key"]);
+    } finally {
+      await provider.close();
+      if (previous === undefined) delete process.env.OBJECT_MCP_TEST_KEY;
+      else process.env.OBJECT_MCP_TEST_KEY = previous;
     }
   });
 

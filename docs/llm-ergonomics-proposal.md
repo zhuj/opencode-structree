@@ -1,5 +1,12 @@
 # Ergonomics of the structree MCP surface for language models
 
+> **Historical note.** This proposal is a dated record of the surface at the
+> time it was written. The excerpt finding was superseded by ADR-0009:
+> `fulltextExcerpt` shipped; see
+> `docs/decisions/0009-fulltext-search-excerpts.md`. The "no excerpt" statement
+> and the fulltext-mode playbook advice below no longer describe the current
+> surface. The historical body is kept intact.
+
 ## 1. Purpose
 
 This document records what a language model experiences when it drives the structree MCP

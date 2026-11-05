@@ -166,9 +166,11 @@ describe("resilient listing integration", () => {
       }
       const partial = listed.find((item) => item.partial === true);
       expect(partial).toBeDefined();
+      expect(partial?.partial).toBe(true);
       if (!partial) throw new Error("Partial document missing from MCP list");
       expect(isRecord(partial.object) && partial.object.id).toBe("partial");
       expect("identity" in partial).toBe(true);
+      expect(isRecord(partial.identity) || isRecord(partial.object)).toBe(true);
       expect(Array.isArray(partial.issues)).toBe(true);
       expect(hasIssue(content.issues, "ENCODING")).toBe(true);
     } finally {

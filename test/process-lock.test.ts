@@ -5,6 +5,9 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { SqliteProcessLock, type SqliteProcessLockOptions } from "@local/object-mcp/sqlite";
 
+/** Typed view of the private connection field for failure-injection tests. */
+type LockInternals = { database: { exec: (sql: string) => unknown } };
+
 const directories: string[] = [];
 const locks: SqliteProcessLock[] = [];
 const releases: Array<() => void> = [];
@@ -180,8 +183,236 @@ for (const driver of ["better-sqlite3", "bun"] as const) {
       expect(closed).toBe(true);
       expect(await second.run(() => "available after close")).toBe("available after close");
     });
+
+    test("work failure takes precedence over ROLLBACK failure", async () => {
+      const { first } = await fixture(driver);
+      const lock = first as unknown as LockInternals;
+      const primary = new Error("work failed");
+      const rollbackError = new Error("rollback failed");
+      const originalExec = lock.database.exec;
+      // Documented contract: a non-enumerable `rollbackError` is attached to
+      // the primary (a `cause` is chained when the primary has none); the
+      // primary is always rethrown with its identity intact.
+      lock.database.exec = (sql: string) => {
+        if (sql === "ROLLBACK;") throw rollbackError;
+        return originalExec.call(lock.database, sql);
+      };
+      const thrown = await first
+        .run(() => {
+          throw primary;
+        })
+        .then(
+          () => {
+            throw new Error("unexpected success");
+          },
+          (error: unknown) => error,
+        );
+      expect(thrown).toBe(primary);
+      expect((thrown as { rollbackError?: unknown }).rollbackError).toBe(rollbackError);
+    });
+
+    test("frozen primary error still propagates unchanged when ROLLBACK fails", async () => {
+      const { first } = await fixture(driver);
+      const lock = first as unknown as LockInternals;
+      const primary = Object.freeze(new Error("work failed"));
+      const rollbackError = new Error("rollback failed");
+      const originalExec = lock.database.exec;
+      lock.database.exec = (sql: string) => {
+        if (sql === "ROLLBACK;") throw rollbackError;
+        return originalExec.call(lock.database, sql);
+      };
+      const thrown = await first
+        .run(() => {
+          throw primary;
+        })
+        .then(
+          () => {
+            throw new Error("unexpected success");
+          },
+          (error: unknown) => error,
+        );
+      expect(thrown).toBe(primary);
+    });
+
+    test("a failed ROLLBACK retries once and the connection recovers for the next run", async () => {
+      const { first } = await fixture(driver);
+      const lock = first as unknown as LockInternals;
+      const primary = new Error("work failed");
+      const rollbackError = new Error("rollback failed");
+      const originalExec = lock.database.exec;
+      let rollbackAttempts = 0;
+      lock.database.exec = (sql: string) => {
+        if (sql === "ROLLBACK;") {
+          rollbackAttempts += 1;
+          if (rollbackAttempts === 1) throw rollbackError;
+        }
+        return originalExec.call(lock.database, sql);
+      };
+      const thrown = await first
+        .run(() => {
+          throw primary;
+        })
+        .then(
+          () => {
+            throw new Error("unexpected success");
+          },
+          (error: unknown) => error,
+        );
+      expect(thrown).toBe(primary);
+      expect((thrown as { rollbackError?: unknown }).rollbackError).toBe(rollbackError);
+      expect(rollbackAttempts).toBe(2);
+      // The retry released the stranded transaction: the same connection can
+      // begin, execute, and commit again.
+      expect(await first.run(() => "after recovery")).toBe("after recovery");
+      lock.database.exec =
+        typeof originalExec === "function" ? originalExec.bind(lock.database) : originalExec;
+    });
+
+    test("a failed ROLLBACK retry that also fails does not mask the primary error", async () => {
+      const { first } = await fixture(driver);
+      const lock = first as unknown as LockInternals;
+      const primary = new Error("work failed");
+      const rollbackError = new Error("rollback failed");
+      const originalExec = lock.database.exec;
+      let rollbackAttempts = 0;
+      lock.database.exec = (sql: string) => {
+        if (sql === "ROLLBACK;") {
+          rollbackAttempts += 1;
+          throw rollbackError;
+        }
+        return originalExec.call(lock.database, sql);
+      };
+      const thrown = await first
+        .run(() => {
+          throw primary;
+        })
+        .then(
+          () => {
+            throw new Error("unexpected success");
+          },
+          (error: unknown) => error,
+        );
+      expect(thrown).toBe(primary);
+      expect((thrown as { rollbackError?: unknown }).rollbackError).toBe(rollbackError);
+      expect(rollbackAttempts).toBe(2);
+      // Fixture best-effort cleanup: release the stranded transaction and
+      // restore the real exec.
+      try {
+        originalExec.call(lock.database, "ROLLBACK;");
+      } catch {
+        // Fixture best-effort cleanup.
+      }
+      lock.database.exec =
+        typeof originalExec === "function" ? originalExec.bind(lock.database) : originalExec;
+    });
+
+    test("a primary error without a cause gains a non-enumerable cause and rollbackError", async () => {
+      const { first } = await fixture(driver);
+      const lock = first as unknown as LockInternals;
+      const primary = new Error("work failed");
+      const rollbackError = new Error("rollback failed");
+      const originalExec = lock.database.exec;
+      lock.database.exec = (sql: string) => {
+        if (sql === "ROLLBACK;") throw rollbackError;
+        return originalExec.call(lock.database, sql);
+      };
+      const thrown = await first
+        .run(() => {
+          throw primary;
+        })
+        .then(
+          () => {
+            throw new Error("unexpected success");
+          },
+          (error: unknown) => error,
+        );
+      expect(thrown).toBe(primary);
+      expect((thrown as { cause?: unknown }).cause).toBe(rollbackError);
+      expect(Object.getOwnPropertyDescriptor(thrown as object, "cause")?.enumerable).toBe(false);
+      expect((thrown as { rollbackError?: unknown }).rollbackError).toBe(rollbackError);
+      expect(Object.getOwnPropertyDescriptor(thrown as object, "rollbackError")?.enumerable).toBe(
+        false,
+      );
+      // Fixture best-effort cleanup: release the stranded transaction and
+      // restore the real exec.
+      try {
+        originalExec.call(lock.database, "ROLLBACK;");
+      } catch {
+        // Fixture best-effort cleanup.
+      }
+      lock.database.exec =
+        typeof originalExec === "function" ? originalExec.bind(lock.database) : originalExec;
+    });
   });
 }
+
+test("COMMIT failure takes precedence over ROLLBACK failure and propagates unchanged when ROLLBACK succeeds", async () => {
+  const { first } = await fixture("bun");
+  const lock = first as unknown as LockInternals;
+  const originalExec = lock.database.exec;
+  const commitError = new Error("commit failed");
+  const rollbackError = new Error("rollback failed");
+
+  // COMMIT throws + ROLLBACK throws → COMMIT error wins with rollback attached.
+  lock.database.exec = (sql: string) => {
+    if (sql === "COMMIT;") throw commitError;
+    if (sql === "ROLLBACK;") throw rollbackError;
+    return originalExec.call(lock.database, sql);
+  };
+  const bothFail = await first
+    .run(() => "ok")
+    .then(
+      () => {
+        throw new Error("unexpected success");
+      },
+      (error: unknown) => error,
+    );
+  expect(bothFail).toBe(commitError);
+  expect((bothFail as { rollbackError?: unknown }).rollbackError).toBe(rollbackError);
+  // Rollback was skipped, so the stranded transaction must be rolled back and
+  // the real exec restored before the next case reuses this connection.
+  // Fresh errors avoid cross-case `rollbackError` state on a reused instance.
+  try {
+    originalExec.call(lock.database, "ROLLBACK;");
+  } catch {
+    // Fixture best-effort cleanup.
+  }
+  lock.database.exec =
+    typeof originalExec === "function" ? originalExec.bind(lock.database) : originalExec;
+
+  // COMMIT throws + ROLLBACK succeeds → COMMIT error unchanged, no rollbackError.
+  const commitError2 = new Error("commit failed only");
+  lock.database.exec = (sql: string) => {
+    if (sql === "COMMIT;") throw commitError2;
+    return originalExec.call(lock.database, sql);
+  };
+  const commitOnly = await first
+    .run(() => "ok")
+    .then(
+      () => {
+        throw new Error("unexpected success");
+      },
+      (error: unknown) => error,
+    );
+  expect(commitOnly).toBe(commitError2);
+  expect((commitOnly as { rollbackError?: unknown }).rollbackError).toBeUndefined();
+});
+
+test("normal commit path is unchanged and acquire timeout keeps LOCK_TIMEOUT", async () => {
+  const { first, second } = await fixture("bun", 30);
+  expect(await first.run(() => "committed")).toBe("committed");
+  const entered = deferred();
+  const release = deferred();
+  const holder = first.run(async () => {
+    entered.resolve();
+    await release.promise;
+    return "held";
+  });
+  await entered.promise;
+  await expect(second.run(() => "unreachable")).rejects.toMatchObject({ code: "LOCK_TIMEOUT" });
+  release.resolve();
+  expect(await holder).toBe("held");
+});
 
 test("process locks require a shared file instead of a private in-memory database", async () => {
   await expect(SqliteProcessLock.open({ path: ":memory:" })).rejects.toMatchObject({

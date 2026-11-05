@@ -19,6 +19,7 @@ interface SourceSearchResultInput {
     | "DERIVED_SEARCH_FAILED"
     | "INDEX_NOT_READY"
     | "SEMANTIC_INDEX_NOT_READY";
+  readonly signal?: AbortSignal;
 }
 
 function fold(value: string): string {
@@ -51,7 +52,7 @@ function scoreDocument(document: ReadDocument, terms: readonly string[]): number
   return terms.reduce((score, term) => score + (counts.get(term) ?? 0), 0) / corpus.length;
 }
 
-export function searchSourceDocuments({
+export async function searchSourceDocuments({
   documents,
   request,
   requestedMode,
@@ -59,39 +60,49 @@ export function searchSourceDocuments({
   observedCount,
   issues,
   recoveryCode,
+  signal,
 }: SourceSearchResultInput) {
   const terms = queryTokens(request.query);
   const limit = request.topN ?? documents.length;
-  const hits: SearchHit[] = documents.flatMap((document) => {
+  const hits: SearchHit[] = [];
+  let processed = 0;
+  for (const document of documents) {
+    signal?.throwIfAborted();
+    if (processed > 0 && processed % 64 === 0) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      signal?.throwIfAborted();
+    }
+    processed++;
     const score = scoreDocument(document, terms);
-    if (score === undefined) return [];
-    const labels = documentLabels(document);
-    const candidate = {
-      type: document.type,
-      id: labels.id,
-      name: labels.name,
-      title: labels.title,
-      path: document.path,
-      checksum: document.checksum,
-      score,
-      fulltextRank: null,
-      fulltextExcerpt: null,
-      semanticDistance: null,
-      matchedChunk: null,
-      ...(request.includeBody ? { body: document.body } : {}),
-    };
-    return document.partial
-      ? [
-          {
-            ...candidate,
-            partial: true,
-            object: document.object,
-            identity: document.identity,
-            issues: document.issues,
-          },
-        ]
-      : [candidate];
-  });
+    if (score !== undefined) {
+      const labels = documentLabels(document);
+      const candidate = {
+        type: document.type,
+        id: labels.id,
+        name: labels.name,
+        title: labels.title,
+        path: document.path,
+        checksum: document.checksum,
+        score,
+        fulltextRank: null,
+        fulltextExcerpt: null,
+        semanticDistance: null,
+        matchedChunk: null,
+        ...(request.includeBody ? { body: document.body } : {}),
+      };
+      if (document.partial) {
+        hits.push({
+          ...candidate,
+          partial: true,
+          object: document.object,
+          identity: document.identity,
+          issues: document.issues,
+        });
+      } else {
+        hits.push(candidate);
+      }
+    }
+  }
   hits.sort(
     (left, right) =>
       right.score - left.score ||

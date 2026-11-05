@@ -162,25 +162,30 @@ test("review preserves incomplete scan diagnostics and continuation rather than 
 });
 
 test("concurrent writers cannot append against the same source revision", async () => {
-  await withObjectFieldsClient(async ({ framework }) => {
-    const planned = await planProgress(framework, {
-      title: "Race",
-      outcome: "Keep exactly one guarded update",
-    });
-    const results = await Promise.allSettled(
-      ["First", "Second"].map((note) =>
-        updateProgress(framework, {
-          id: planned.id,
-          expectedChecksum: planned.checksum,
-          checkpoint: { note },
-        }),
-      ),
-    );
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    const rejected = results.find((result) => result.status === "rejected");
-    expect(rejected).toHaveProperty("reason.code", "CHECKSUM_CONFLICT");
-    expect((await resumeProgress(framework, { id: planned.id })).checkpointCount).toBe(1);
-  }, progressDefinitions);
+  await withObjectFieldsClient(
+    async ({ framework }) => {
+      const planned = await planProgress(framework, {
+        title: "Race",
+        outcome: "Keep exactly one guarded update",
+      });
+      const results = await Promise.allSettled(
+        ["First", "Second"].map((note) =>
+          updateProgress(framework, {
+            id: planned.id,
+            expectedChecksum: planned.checksum,
+            checkpoint: { note },
+          }),
+        ),
+      );
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      const rejected = results.find((result) => result.status === "rejected");
+      expect(rejected).toHaveProperty("reason.code", "CHECKSUM_CONFLICT");
+      expect((await resumeProgress(framework, { id: planned.id })).checkpointCount).toBe(1);
+    },
+    progressDefinitions,
+    undefined,
+    { checksumGuard: true },
+  );
 });
 
 test("a parent may depend on its child without confusing hierarchy edges with dependency cycles", async () => {

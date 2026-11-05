@@ -46,7 +46,7 @@ export function registerMemoryWorkflowTools(
     "memory_remember",
     {
       description:
-        "Store meaningful title/body with optional category (lessons), scope (applicability), labels, status (draft), confidence (low), reviewAfter, evidence and relations. Server supplies id/name/description defaults and dates; never infers approval or evidence. Returns stored record/checksum plus bounded same-title candidates. No automatic merge or target changes. Do not store secrets.",
+        "Store meaningful title/body. Prefer an optional descriptive slug name for the stable id and filename; otherwise an id is generated. Optional category (lessons), scope (applicability), labels, status (draft), confidence (low), reviewAfter, evidence and relations. Server supplies description defaults and dates; never infers approval or evidence. Returns stored record/checksum plus bounded same-title candidates. No automatic merge or target changes. Do not store secrets.",
       inputSchema: input.schema(RememberMemorySchema),
       annotations: write,
     },

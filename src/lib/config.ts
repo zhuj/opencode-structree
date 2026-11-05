@@ -86,6 +86,7 @@ export const FrameworkConfigSchema = Schema.Struct({
     debounceMs: nonnegative,
     rescanIntervalMs: nonnegative,
     maxFileBytes: positive,
+    maxScanTotalCharacters: positive,
     concurrency: positive,
     lockTimeoutMs: positive,
   }),
@@ -99,6 +100,7 @@ export const FrameworkConfigSchema = Schema.Struct({
     maxMatchCharacters: positive,
   }),
   server: Schema.Struct({ name: text, version: text }),
+  writes: Schema.Struct({ checksumGuard: Schema.Boolean }),
   mcp: Schema.Struct({ inputRepair: McpInputRepairConfigSchema }),
 });
 
@@ -156,6 +158,8 @@ export const defaultConfig: FrameworkConfig = {
     debounceMs: 150,
     rescanIntervalMs: 60_000,
     maxFileBytes: 5_000_000,
+    /** Total decoded characters (UTF-16 code units) a single walk may collect. Bounds walk()'s in-memory array. */
+    maxScanTotalCharacters: 268_435_456,
     concurrency: 2,
     lockTimeoutMs: 10_000,
   },
@@ -169,6 +173,7 @@ export const defaultConfig: FrameworkConfig = {
     maxMatchCharacters: 1200,
   },
   server: { name: "object-mcp", version: "0.1.0" },
+  writes: { checksumGuard: false },
   mcp: {
     inputRepair: { ...DEFAULT_REPAIR_OPTIONS },
   },
@@ -185,6 +190,7 @@ export type FrameworkConfigInput = {
   readonly sync?: Partial<FrameworkConfig["sync"]>;
   readonly search?: Partial<FrameworkConfig["search"]>;
   readonly server?: Partial<FrameworkConfig["server"]>;
+  readonly writes?: Partial<FrameworkConfig["writes"]>;
   readonly mcp?: { readonly inputRepair?: Partial<FrameworkConfig["mcp"]["inputRepair"]> };
 };
 
@@ -202,12 +208,28 @@ export function defineConfig(
   for (const key of Object.keys(raw))
     if (!knownKeys.has(key))
       throw new FrameworkError("CONFIG", `Unknown configuration key: ${key}`);
-  for (const key of ["sqlite", "embeddings", "chunking", "sync", "search", "server", "mcp"]) {
+  for (const key of [
+    "sqlite",
+    "embeddings",
+    "chunking",
+    "sync",
+    "search",
+    "server",
+    "writes",
+    "mcp",
+  ]) {
     if (Object.hasOwn(raw, key) && !isRecord(raw[key]))
       throw new FrameworkError("CONFIG", `${key} configuration must be an object.`);
   }
   if (input.mcp && Object.hasOwn(input.mcp, "inputRepair") && !isRecord(input.mcp.inputRepair)) {
     throw new FrameworkError("CONFIG", "mcp.inputRepair configuration must be an object.");
+  }
+  if (
+    input.writes &&
+    Object.hasOwn(input.writes, "checksumGuard") &&
+    typeof input.writes.checksumGuard !== "boolean"
+  ) {
+    throw new FrameworkError("CONFIG", "writes.checksumGuard configuration must be a boolean.");
   }
   const embeddingInput = input.embeddings;
   const providerDefaults =
@@ -225,6 +247,7 @@ export function defineConfig(
     sync: { ...defaultConfig.sync, ...input.sync },
     search: { ...defaultConfig.search, ...input.search },
     server: { ...defaultConfig.server, ...input.server },
+    writes: { ...defaultConfig.writes, ...input.writes },
     mcp: {
       ...defaultConfig.mcp,
       ...input.mcp,
@@ -315,7 +338,7 @@ export interface LoadConfigOptions {
   readonly localConfigFile?: string | null;
 }
 
-const MERGEABLE_SECTIONS = ["sqlite", "chunking", "sync", "search", "server"] as const;
+const MERGEABLE_SECTIONS = ["sqlite", "chunking", "sync", "search", "server", "writes"] as const;
 
 function providerDefaultsFor(provider: unknown): Record<string, unknown> {
   if (provider === "openai") return { ...openaiDefaults };

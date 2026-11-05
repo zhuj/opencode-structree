@@ -116,6 +116,10 @@ This configuration disables embeddings and uses full-text search only. It does n
 
 Open or reload this repository as an OpenCode V2 project, then use `/mcps` to find `structree` and check its connection status. After source edits, run `bun run build` again and reconnect the server or reload the project to use the updated bundle. OpenCode does not build it automatically.
 
+## Packaging and lockfiles
+
+`./model` is the only dist-built export (see `scripts/check-model-fresh.ts`: after editing `src/lib/model/`, rerun `bun run build:model` to rebuild `dist/model/`; the optional `bun run check:model` verifies freshness). All other exports resolve directly to TypeScript sources. `bun.lock` is the canonical lockfile for Bun development and `package-lock.json` exists for npm-based consumers; the dual lockfiles are intentional and neither should be regenerated casually.
+
 ## Storage layout and local overrides
 
 The default project layout keeps authoritative sources, the derived search index, and local configuration under `.local/.structree/` in the project root:
@@ -256,12 +260,19 @@ search hits include `partial`, `object`, `identity`, and `issues`, but no dedica
 `raw` field; their name/title fallbacks are derived display labels.
 
 Create and update still require complete, schema-valid objects. Tolerant reading
-does not waive checksum conflicts, duplicate-identity ambiguity, bounded file
+does not waive duplicate-identity ambiguity, bounded file
 size, UTF-8 validation, filesystem confinement, or real I/O failures. Reads do
 not rewrite the source or change its ownership or permissions.
 
 Update/delete of a partial source returns `SOURCE_CONFLICT`, even when it has an
 explicit id and a current checksum. Repair its source explicitly before mutation.
+
+Checksum verification is optional and disabled by default (`writes.checksumGuard: false`).
+The host agent edits vault files directly (filesystem is source of truth), so update
+and delete accept any supplied `expectedChecksum` without comparing it. Responses
+still return the fresh checksum. Enable `writes.checksumGuard: true` in config to
+restore strict `CHECKSUM_CONFLICT` rejection on a mismatch. The flag is read at
+server start; restart to pick up changes.
 
 ## Registered schemas and their tools
 
@@ -290,7 +301,7 @@ The shared tools are `objects_search`, `objects_relations`, `objects_resync`, `o
 
 > Object ids are stable, unique within their type, and are the only handle: the file name is the id, an id is always lowercase, and the scanner renames a file whose name does not match its id.
 
-The remaining guidance states that `get` answers a known id, update and delete replace the whole revision and need the checksum from the latest get, list, create or update, the timestamps are supplied by the caller while the id and `createdAt` are immutable, relation targets are not validated as described below, `description` is a one-line summary and the body is the Markdown content, and search is not exhaustive. Every per-type tool description ends with "See objects_definitions for the object model and workflow."
+The remaining guidance states that `get` answers a known id, update and delete replace the whole revision (supplying the checksum from the latest get, list, create or update; verified only when `writes.checksumGuard` is enabled), the timestamps are supplied by the caller while the id and `createdAt` are immutable, relation targets are not validated as described below, `description` is a one-line summary and the body is the Markdown content, and search is not exhaustive. Every per-type tool description ends with "See objects_definitions for the object model and workflow."
 
 The generated input schemas state the limits the runtime enforces. The list `limit` is an integer from 1 to 1000 and defaults to 50, the list `offset` is 0 or more and defaults to 0, and the search `topN` is an integer from 1 to the configured `search.maxTopN`, which is 100 by default, and defaults to the configured `search.defaultTopN`, which is 10 by default. Each per-type list tool takes an optional `includeBody` boolean that defaults to true; with it false the returned objects carry identity, title, path and checksum only, which is the cheap way to discover the contents of a type.
 
@@ -469,7 +480,7 @@ For text beyond a model's context window, the provider processes every internal 
 
 The default provider uses local ONNX CPU inference with a pinned multilingual E5 model, 384 dimensions, q8 weights, and its query/passage prefixes. `embeddings.device` selects the execution provider: `cpu`, the default and always available, or `cuda`, which needs the CUDA 12 runtime libraries present for the installed onnxruntime-node build and reports the `DEVICE_UNAVAILABLE` error code when the backend cannot be initialized. The device participates in the cache fingerprint, so changing it invalidates the cached vectors of the affected objects.
 
-The OpenAI provider supports endpoint/model/dimensions configuration, batching, timeouts, retries, cancellation, and credentials. An external OpenAI API compatible provider is selected with `embeddings.baseUrl`; the request is posted to `<baseUrl>/embeddings` and omits the `dimensions` field for every model outside the `text-embedding-3` family, because such a server may reject that field. Credentials come from the environment variable named by `embeddings.apiKeyEnv`; an empty name sends the request without an `Authorization` header, and a named but unset variable fails with the `API_KEY_MISSING` error code. A literal `embeddings.apiKey` is accepted as well: prefer `apiKeyEnv`, and keep a literal key only in the git-ignored local file `.local/.structree/config.yaml`, never in a tracked configuration file. A literal key is never written to the fingerprint, to an error message, or to any file. Use `examples/openai.config.json` to select the provider. Object text and queries are sent to that configured endpoint when this provider is selected. The source package contains no API key.
+The OpenAI provider supports endpoint/model/dimensions configuration, batching, timeouts, retries, cancellation, and credentials. An external OpenAI API compatible provider is selected with `embeddings.baseUrl`; the request is posted to `<baseUrl>/embeddings` and omits the `dimensions` field for every model outside the `text-embedding-3` family, because such a server may reject that field. Credentials come first from an injected key, then from the environment variable named by `embeddings.apiKeyEnv`; an empty name sends the request without an `Authorization` header, and a named but unset variable fails with the `API_KEY_MISSING` error code. A literal `embeddings.apiKey` is accepted as a fallback only, after the injected key and the environment variable: prefer `apiKeyEnv`, and keep a literal key only in the git-ignored local file `.local/.structree/config.yaml`, never in a tracked configuration file. This is a behavior change for configurations that set both a literal key and a populated environment variable: the environment variable now wins over the literal key. A literal key is never written to the fingerprint, to an error message, or to any file. Use `examples/openai.config.json` to select the provider. Object text and queries are sent to that configured endpoint when this provider is selected. The source package contains no API key.
 
 ## Database and table extension API
 

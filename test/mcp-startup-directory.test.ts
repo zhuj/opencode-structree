@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaultConfig, LOCAL_STATE_RELATIVE_DIRECTORY } from "../src/lib/config.ts";
+import { withChildTimeout } from "./helpers/timing.ts";
 import { parseRpcResponse } from "./resilient-cli-helpers.ts";
 
 const cli = path.resolve(import.meta.dir, "../src/cli.ts");
@@ -50,7 +51,7 @@ async function initialize(directory: string, config: string, check: () => Promis
   });
   const stderr = new Response(child.stderr).text();
   const reader = child.stdout.getReader();
-  const timer = setTimeout(() => child.kill("SIGKILL"), 8_000);
+  const guard = withChildTimeout(child, 8_000);
   try {
     child.stdin.write(
       `${JSON.stringify({
@@ -76,11 +77,14 @@ async function initialize(directory: string, config: string, check: () => Promis
     expect(response.id).toBe(1);
     expect(response.error).toBeUndefined();
     expect(response.result).toBeDefined();
+    // parseRpcResponse drops server metadata; the strongest oracle available
+    // through the helper is absence of error plus defined object result.
+    expect(response).not.toHaveProperty("error");
     await check();
     await child.stdin.end();
     expect(await child.exited).toBe(0);
   } finally {
-    clearTimeout(timer);
+    guard.clear();
     child.kill("SIGKILL");
     await child.exited;
     reader.releaseLock();
@@ -95,7 +99,7 @@ async function runCli(directory: string, args: readonly string[]) {
     stdout: "pipe",
     stderr: "pipe",
   });
-  const timer = setTimeout(() => child.kill("SIGKILL"), 8_000);
+  const guard = withChildTimeout(child, 8_000);
   try {
     const [code, stdout, stderr] = await Promise.all([
       child.exited,
@@ -104,7 +108,7 @@ async function runCli(directory: string, args: readonly string[]) {
     ]);
     return { code, stdout, stderr };
   } finally {
-    clearTimeout(timer);
+    guard.clear();
     child.kill("SIGKILL");
     await child.exited;
   }

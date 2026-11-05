@@ -14,6 +14,27 @@ function progressServer(facade: ObjectFacade): McpServer {
   return server;
 }
 
+test("planning accepts a unique descriptive slug and rejects unsafe names", async () => {
+  await withObjectFieldsClient(
+    async ({ client, framework }) => {
+      const args = { name: "Ship-Feature", title: "Ship", outcome: "Done" };
+      const created = await client.callTool({ name: "progress_plan", arguments: args });
+      expect(created.isError).not.toBe(true);
+      expect(created.structuredContent).toHaveProperty("id", "ship-feature");
+      expect((await framework.get("work_item", "ship-feature")).path).toEndWith("/ship-feature.md");
+      const duplicate = await client.callTool({ name: "progress_plan", arguments: args });
+      expect(duplicate.structuredContent).toHaveProperty("error.code", "ALREADY_EXISTS");
+      for (const name of ["../escape", "nul", "two words", ""]) {
+        expect(
+          (await client.callTool({ name: "progress_plan", arguments: { ...args, name } })).isError,
+        ).toBe(true);
+      }
+    },
+    progressDefinitions,
+    progressServer,
+  );
+});
+
 test("four compact intent tools expose server-owned planning and a guarded update", async () => {
   await withObjectFieldsClient(
     async ({ client }) => {
@@ -89,6 +110,7 @@ test("four compact intent tools expose server-owned planning and a guarded updat
     },
     progressDefinitions,
     progressServer,
+    { checksumGuard: true },
   );
 });
 
